@@ -8,6 +8,7 @@ import 'package:open_wearable/apps/posture_tracker/view/posture_tracker_view.dar
 import 'package:open_wearable/apps/widgets/app_compatibility.dart';
 import 'package:open_wearable/apps/widgets/select_earable_view.dart';
 import 'package:open_wearable/apps/widgets/app_tile.dart';
+import 'package:open_wearable/apps/yoga_posture_tracker/widgets/yoga_posture_tracker_page.dart';
 import 'package:open_wearable/view_models/wearables_provider.dart';
 import 'package:open_wearable/widgets/connector_activity_indicator.dart';
 import 'package:open_wearable/widgets/recording_activity_indicator.dart';
@@ -43,6 +44,10 @@ const List<String> _postureSupportedDevices = [
   "OpenEarable",
 ];
 const List<String> _heartSupportedDevices = [
+  "OpenEarable",
+  "OpenRing",
+];
+const List<String> _yogaPostureSupportedDevices = [
   "OpenEarable",
   "OpenRing",
 ];
@@ -84,6 +89,14 @@ Sensor? _findOpticalTemperatureSensor(List<Sensor> sensors) {
 }
 
 final List<AppInfo> _apps = [
+  AppInfo(
+    logoPath: "lib/apps/yoga_posture_tracker/assets/logo.png",
+    title: "Yoga Posture Tracker",
+    description: "Track Warrior II with earable and ring IMU data",
+    supportedDevices: _yogaPostureSupportedDevices,
+    accentColor: const Color(0xFF4D7C6F),
+    widget: const YogaPostureTrackerPage(),
+  ),
   AppInfo(
     logoPath: "lib/apps/posture_tracker/assets/logo.png",
     title: "Posture Tracker",

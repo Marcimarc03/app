@@ -191,9 +191,11 @@ class PoseEvaluationResult {
 
 class YogaFeedback {
   final String recommendation;
+  final bool generatedByLlm;
 
   const YogaFeedback({
     required this.recommendation,
+    this.generatedByLlm = false,
   });
 }
 
@@ -207,5 +209,5 @@ class YogaPostureTrackerThresholds {
 
 const YogaPose warriorTwoPose = YogaPose(
   name: 'Warrior II',
-  instruction: 'Move into Warrior II and hold the pose for 5 seconds.',
+  instruction: 'Move into Warrior II and hold the pose for 30 seconds.',
 );

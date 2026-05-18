@@ -159,3 +159,8 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 open_wearable/devtools_options.yaml
+
+# Local API keys / Flutter dart defines
+.env
+*.env
+!.env.example

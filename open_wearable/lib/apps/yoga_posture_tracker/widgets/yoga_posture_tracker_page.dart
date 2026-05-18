@@ -102,6 +102,7 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
           instruction: controller.pose.instruction,
           remainingSeconds: controller.remainingSeconds,
           totalSeconds: YogaSessionController.holdDuration.inSeconds,
+          liveFeedback: controller.feedback,
         ),
       YogaSessionPhase.evaluating ||
       YogaSessionPhase.feedback =>
@@ -146,7 +147,7 @@ class _StartScreen extends StatelessWidget {
           title: 'MVP flow',
           icon: Icons.route_rounded,
           child: const Text(
-            'The session calibrates a neutral standing posture, then asks you to hold Warrior II for 5 seconds. A rule-based evaluator compares the hold against the calibration baseline.',
+            'The session calibrates a neutral standing posture, then asks you to hold Warrior II for 30 seconds. A rule-based evaluator checks short windows during the hold and can generate live coaching feedback.',
           ),
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
@@ -355,7 +356,7 @@ class _PoseInstructionScreen extends StatelessWidget {
             width: double.infinity,
             child: PlatformElevatedButton(
               onPressed: onBeginHold,
-              child: PlatformText('Start 5-second hold'),
+              child: PlatformText('Start 30-second hold'),
             ),
           ),
         ),
@@ -370,6 +371,7 @@ class _ProgressScreen extends StatelessWidget {
   final String instruction;
   final int remainingSeconds;
   final int totalSeconds;
+  final YogaFeedback? liveFeedback;
 
   const _ProgressScreen({
     required this.title,
@@ -377,6 +379,7 @@ class _ProgressScreen extends StatelessWidget {
     required this.instruction,
     required this.remainingSeconds,
     required this.totalSeconds,
+    this.liveFeedback,
   });
 
   @override
@@ -437,6 +440,10 @@ class _ProgressScreen extends StatelessWidget {
                           ],
                         ),
                       ),
+                      if (liveFeedback != null) ...[
+                        const SizedBox(height: 18),
+                        _LiveFeedbackCard(feedback: liveFeedback!),
+                      ],
                     ],
                   ),
                 ),
@@ -444,6 +451,49 @@ class _ProgressScreen extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _LiveFeedbackCard extends StatelessWidget {
+  final YogaFeedback feedback;
+
+  const _LiveFeedbackCard({
+    required this.feedback,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.primaryContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              feedback.generatedByLlm
+                  ? Icons.auto_awesome_rounded
+                  : Icons.record_voice_over_rounded,
+              color: colors.onPrimaryContainer,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                feedback.recommendation,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: colors.onPrimaryContainer,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

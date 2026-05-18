@@ -11,7 +11,8 @@ import 'package:open_wearable/view_models/wearables_provider.dart';
 
 class YogaSessionController with ChangeNotifier {
   static const Duration calibrationDuration = Duration(seconds: 3);
-  static const Duration holdDuration = Duration(seconds: 5);
+  static const Duration holdDuration = Duration(seconds: 30);
+  static const Duration coachingWindowDuration = Duration(seconds: 5);
 
   final YogaSensorService _sensorService;
   final RuleBasedPoseEvaluator _poseEvaluator;
@@ -33,8 +34,7 @@ class YogaSessionController with ChangeNotifier {
     TtsFeedbackService? ttsFeedbackService,
   })  : _sensorService = sensorService ?? YogaSensorService(),
         _poseEvaluator = poseEvaluator ?? const RuleBasedPoseEvaluator(),
-        _llmFeedbackService =
-            llmFeedbackService ?? const TemplateLlmFeedbackService(),
+        _llmFeedbackService = llmFeedbackService ?? GeminiLlmFeedbackService(),
         _ttsFeedbackService =
             ttsFeedbackService ?? const LoggingTtsFeedbackService();
 
@@ -133,34 +133,61 @@ class YogaSessionController with ChangeNotifier {
     }
 
     _setPhase(YogaSessionPhase.holdingPose);
-    final collectionFuture = _sensorService.collectWindow(
-      devices: _devices,
-      wearablesProvider: wearablesProvider,
-      duration: holdDuration,
-    );
-    await _countDown(holdDuration);
-    final poseWindow = await collectionFuture;
+    _remainingSeconds = holdDuration.inSeconds;
+    notifyListeners();
+
+    PoseEvaluationResult? latestResult;
+    YogaFeedback? latestFeedback;
+    var secondsCollected = 0;
+    while (secondsCollected < holdDuration.inSeconds) {
+      final remaining = holdDuration.inSeconds - secondsCollected;
+      final windowSeconds = remaining < coachingWindowDuration.inSeconds
+          ? remaining
+          : coachingWindowDuration.inSeconds;
+      final windowDuration = Duration(seconds: windowSeconds);
+
+      final collectionFuture = _sensorService.collectWindow(
+        devices: _devices,
+        wearablesProvider: wearablesProvider,
+        duration: windowDuration,
+      );
+      await _countDownSegment(windowDuration);
+      final poseWindow = await collectionFuture;
+      secondsCollected += windowSeconds;
+
+      final result = _poseEvaluator.evaluateWarriorTwo(
+        calibration: calibrationData,
+        poseWindow: poseWindow,
+      );
+      latestResult = result;
+      _evaluationResult = result;
+      logger.i(
+        'Yoga live evaluation result: score=${result.score}, '
+        'errors=${result.errors.map((error) => error.code).join(', ')}',
+      );
+
+      final generatedFeedback = await _llmFeedbackService.generateYogaFeedback(
+        postureErrors: result.errors,
+        poseName: pose.name,
+        score: result.score,
+      );
+      latestFeedback = generatedFeedback;
+      _feedback = generatedFeedback;
+      logger.i(
+        'Yoga live feedback generated: ${generatedFeedback.recommendation}',
+      );
+      notifyListeners();
+      await _ttsFeedbackService.speak(generatedFeedback.recommendation);
+    }
 
     _setPhase(YogaSessionPhase.evaluating);
-    final result = _poseEvaluator.evaluateWarriorTwo(
-      calibration: calibrationData,
-      poseWindow: poseWindow,
-    );
-    _evaluationResult = result;
-    logger.i(
-      'Yoga evaluation result: score=${result.score}, '
-      'errors=${result.errors.map((error) => error.code).join(', ')}',
-    );
-
-    final generatedFeedback = await _llmFeedbackService.generateYogaFeedback(
-      postureErrors: result.errors,
-      poseName: pose.name,
-      score: result.score,
-    );
-    _feedback = generatedFeedback;
-    logger.i('Yoga feedback generated: ${generatedFeedback.recommendation}');
+    if (latestResult != null) {
+      _evaluationResult = latestResult;
+    }
+    if (latestFeedback != null) {
+      _feedback = latestFeedback;
+    }
     _setPhase(YogaSessionPhase.feedback);
-    await _ttsFeedbackService.speak(generatedFeedback.recommendation);
     _setPhase(YogaSessionPhase.result);
   }
 
@@ -192,6 +219,15 @@ class YogaSessionController with ChangeNotifier {
     for (var second = duration.inSeconds; second > 0; second--) {
       await Future<void>.delayed(const Duration(seconds: 1));
       _remainingSeconds = second - 1;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _countDownSegment(Duration duration) async {
+    for (var second = 0; second < duration.inSeconds; second++) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      _remainingSeconds =
+          (_remainingSeconds - 1).clamp(0, holdDuration.inSeconds);
       notifyListeners();
     }
   }

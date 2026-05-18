@@ -137,6 +137,58 @@ class SensorWindow {
   }
 }
 
+class SensorSampleQuality {
+  final String label;
+  final int sampleCount;
+  final int minimumSampleCount;
+  final bool isRequired;
+
+  const SensorSampleQuality({
+    required this.label,
+    required this.sampleCount,
+    required this.minimumSampleCount,
+    this.isRequired = true,
+  });
+
+  bool get isMissing => sampleCount == 0;
+  bool get isLow => sampleCount > 0 && sampleCount < minimumSampleCount;
+  bool get isOk => !isRequired || sampleCount >= minimumSampleCount;
+
+  String get statusLabel {
+    if (!isRequired) {
+      return 'Optional';
+    }
+    if (isMissing) {
+      return 'No data';
+    }
+    if (isLow) {
+      return 'Low data';
+    }
+    return 'Live';
+  }
+}
+
+class SensorWindowQuality {
+  final List<SensorSampleQuality> streams;
+
+  const SensorWindowQuality({
+    required this.streams,
+  });
+
+  int get totalSampleCount {
+    return streams.fold<int>(
+      0,
+      (total, stream) => total + stream.sampleCount,
+    );
+  }
+
+  bool get hasIssues => streams.any((stream) => !stream.isOk);
+
+  List<SensorSampleQuality> get issueStreams {
+    return streams.where((stream) => !stream.isOk).toList(growable: false);
+  }
+}
+
 class CalibrationData {
   final SensorWindow baselineWindow;
   final RingAssignment ringAssignment;
@@ -159,6 +211,8 @@ class PostureError {
   final PostureErrorSeverity severity;
   final double measuredValue;
   final double threshold;
+  final int occurrenceCount;
+  final int? evaluatedWindowCount;
 
   const PostureError({
     required this.code,
@@ -166,6 +220,8 @@ class PostureError {
     required this.severity,
     required this.measuredValue,
     required this.threshold,
+    this.occurrenceCount = 1,
+    this.evaluatedWindowCount,
   });
 
   int get scorePenalty {

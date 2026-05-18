@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:open_earable_flutter/open_earable_flutter.dart' hide logger;
 import 'package:open_wearable/apps/widgets/app_compatibility.dart';
@@ -33,6 +34,7 @@ class YogaSensorService {
     required YogaDeviceSet devices,
     required WearablesProvider wearablesProvider,
     required Duration duration,
+    Future<void>? cancelSignal,
   }) async {
     final earableAccelerometer = <ImuSample>[];
     final earableGyroscope = <ImuSample>[];
@@ -127,7 +129,7 @@ class YogaSensorService {
       }
     }
 
-    await Future<void>.delayed(duration);
+    await _delayOrCancel(duration, cancelSignal);
     for (final subscription in subscriptions) {
       await subscription.cancel();
     }
@@ -145,6 +147,52 @@ class YogaSensorService {
     return window;
   }
 
+  SensorWindowQuality assessSignalQuality({
+    required YogaDeviceSet devices,
+    required SensorWindow window,
+    required Duration duration,
+  }) {
+    final minimumSampleCount = max(1, duration.inSeconds * 5);
+    final streams = <SensorSampleQuality>[
+      SensorSampleQuality(
+        label: 'Earable accelerometer',
+        sampleCount: window.earableAccelerometerSamples.length,
+        minimumSampleCount: minimumSampleCount,
+      ),
+      SensorSampleQuality(
+        label: 'Earable gyroscope',
+        sampleCount: window.earableGyroscopeSamples.length,
+        minimumSampleCount: minimumSampleCount,
+      ),
+    ];
+
+    final leftRingId = devices.ringAssignment.leftRingId;
+    if (leftRingId != null) {
+      streams.addAll(
+        _ringQualityStreams(
+          labelPrefix: 'Left ring',
+          ringId: leftRingId,
+          window: window,
+          minimumSampleCount: minimumSampleCount,
+        ),
+      );
+    }
+
+    final rightRingId = devices.ringAssignment.rightRingId;
+    if (rightRingId != null) {
+      streams.addAll(
+        _ringQualityStreams(
+          labelPrefix: 'Right ring',
+          ringId: rightRingId,
+          window: window,
+          minimumSampleCount: minimumSampleCount,
+        ),
+      );
+    }
+
+    return SensorWindowQuality(streams: streams);
+  }
+
   Future<void> turnOffYogaSensors({
     required YogaDeviceSet devices,
     required WearablesProvider wearablesProvider,
@@ -156,6 +204,40 @@ class YogaSensorService {
     for (final wearable in wearables) {
       await wearablesProvider.turnOffSensorsForDevice(wearable);
     }
+  }
+
+  Future<void> _delayOrCancel(
+    Duration duration,
+    Future<void>? cancelSignal,
+  ) async {
+    if (cancelSignal == null) {
+      await Future<void>.delayed(duration);
+      return;
+    }
+    await Future.any([
+      Future<void>.delayed(duration),
+      cancelSignal,
+    ]);
+  }
+
+  List<SensorSampleQuality> _ringQualityStreams({
+    required String labelPrefix,
+    required String ringId,
+    required SensorWindow window,
+    required int minimumSampleCount,
+  }) {
+    return [
+      SensorSampleQuality(
+        label: '$labelPrefix accelerometer',
+        sampleCount: window.ringAccelerometerSamplesFor(ringId).length,
+        minimumSampleCount: minimumSampleCount,
+      ),
+      SensorSampleQuality(
+        label: '$labelPrefix gyroscope',
+        sampleCount: window.ringGyroscopeSamplesFor(ringId).length,
+        minimumSampleCount: minimumSampleCount,
+      ),
+    ];
   }
 
   Sensor? _findSensor(List<Sensor> sensors, List<String> keywords) {

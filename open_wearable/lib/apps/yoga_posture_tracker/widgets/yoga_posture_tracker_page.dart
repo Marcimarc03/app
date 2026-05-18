@@ -21,6 +21,7 @@ class YogaPostureTrackerPage extends StatefulWidget {
 class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
   late final YogaSessionController _controller;
   final YogaSensorService _sensorService = YogaSensorService();
+  WearablesProvider? _wearablesProvider;
 
   @override
   void initState() {
@@ -29,7 +30,17 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _wearablesProvider ??= context.read<WearablesProvider>();
+  }
+
+  @override
   void dispose() {
+    final wearablesProvider = _wearablesProvider;
+    if (wearablesProvider != null) {
+      unawaited(_controller.shutdown(wearablesProvider));
+    }
     _controller.dispose();
     super.dispose();
   }
@@ -90,6 +101,7 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
               'Stand upright, keep your head straight, place your arms next to your body with palms facing inward.',
           remainingSeconds: controller.remainingSeconds,
           totalSeconds: YogaSessionController.calibrationDuration.inSeconds,
+          onStop: () => unawaited(controller.stopSession(wearablesProvider)),
         ),
       YogaSessionPhase.poseInstructions => _PoseInstructionScreen(
           pose: controller.pose,
@@ -103,6 +115,8 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
           remainingSeconds: controller.remainingSeconds,
           totalSeconds: YogaSessionController.holdDuration.inSeconds,
           liveFeedback: controller.feedback,
+          signalQuality: controller.latestSignalQuality,
+          onStop: () => unawaited(controller.stopSession(wearablesProvider)),
         ),
       YogaSessionPhase.evaluating ||
       YogaSessionPhase.feedback =>
@@ -110,6 +124,7 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
       YogaSessionPhase.result => _ResultScreen(
           result: controller.evaluationResult,
           feedback: controller.feedback,
+          signalQuality: controller.latestSignalQuality,
           onRestart: () =>
               unawaited(controller.restartSession(wearablesProvider)),
           onDone: () => unawaited(controller.stopSession(wearablesProvider)),
@@ -372,6 +387,8 @@ class _ProgressScreen extends StatelessWidget {
   final int remainingSeconds;
   final int totalSeconds;
   final YogaFeedback? liveFeedback;
+  final SensorWindowQuality? signalQuality;
+  final VoidCallback? onStop;
 
   const _ProgressScreen({
     required this.title,
@@ -380,6 +397,8 @@ class _ProgressScreen extends StatelessWidget {
     required this.remainingSeconds,
     required this.totalSeconds,
     this.liveFeedback,
+    this.signalQuality,
+    this.onStop,
   });
 
   @override
@@ -444,12 +463,27 @@ class _ProgressScreen extends StatelessWidget {
                         const SizedBox(height: 18),
                         _LiveFeedbackCard(feedback: liveFeedback!),
                       ],
+                      if (signalQuality != null) ...[
+                        const SizedBox(height: 12),
+                        _SignalQualityCard(signalQuality: signalQuality!),
+                      ],
                     ],
                   ),
                 ),
               ),
             ),
           ),
+          if (onStop != null)
+            SafeArea(
+              top: false,
+              child: SizedBox(
+                width: double.infinity,
+                child: PlatformTextButton(
+                  onPressed: onStop,
+                  child: PlatformText('Stop session'),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -499,6 +533,80 @@ class _LiveFeedbackCard extends StatelessWidget {
   }
 }
 
+class _SignalQualityCard extends StatelessWidget {
+  final SensorWindowQuality signalQuality;
+
+  const _SignalQualityCard({
+    required this.signalQuality,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final statusColor =
+        signalQuality.hasIssues ? colors.error : const Color(0xFF2E7D32);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  signalQuality.hasIssues
+                      ? Icons.signal_cellular_connected_no_internet_4_bar
+                      : Icons.sensors_rounded,
+                  color: statusColor,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  signalQuality.hasIssues
+                      ? 'Sensor data needs attention'
+                      : 'Sensor data live',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: statusColor,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            for (final stream in signalQuality.streams)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  children: [
+                    Icon(
+                      stream.isOk
+                          ? Icons.check_circle_rounded
+                          : Icons.error_outline_rounded,
+                      size: 16,
+                      color:
+                          stream.isOk ? const Color(0xFF2E7D32) : colors.error,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(stream.label)),
+                    Text(
+                      '${stream.sampleCount} samples',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _EvaluatingScreen extends StatelessWidget {
   const _EvaluatingScreen();
 
@@ -520,12 +628,14 @@ class _EvaluatingScreen extends StatelessWidget {
 class _ResultScreen extends StatelessWidget {
   final PoseEvaluationResult? result;
   final YogaFeedback? feedback;
+  final SensorWindowQuality? signalQuality;
   final VoidCallback onRestart;
   final VoidCallback onDone;
 
   const _ResultScreen({
     required this.result,
     required this.feedback,
+    required this.signalQuality,
     required this.onRestart,
     required this.onDone,
   });
@@ -543,6 +653,10 @@ class _ResultScreen extends StatelessWidget {
           subtitle: feedback?.recommendation ?? 'No feedback generated.',
           icon: Icons.insights_rounded,
         ),
+        if (signalQuality != null) ...[
+          const SizedBox(height: SensorPageSpacing.sectionGap),
+          _SignalQualityCard(signalQuality: signalQuality!),
+        ],
         const SizedBox(height: SensorPageSpacing.sectionGap),
         if (result == null || result.errors.isEmpty)
           _InfoCard(
@@ -633,12 +747,20 @@ class _IssueGroupCard extends StatelessWidget {
                     leading: const Icon(Icons.priority_high_rounded),
                     title: Text(error.message),
                     subtitle: Text(
-                      'Measured ${error.measuredValue.toStringAsFixed(1)} / threshold ${error.threshold.toStringAsFixed(1)}',
+                      _formatErrorDetail(error),
                     ),
                   ),
               ],
             ),
     );
+  }
+
+  String _formatErrorDetail(PostureError error) {
+    final windowCount = error.evaluatedWindowCount;
+    final occurrence = windowCount == null
+        ? ''
+        : 'Detected in ${error.occurrenceCount}/$windowCount windows. ';
+    return '${occurrence}Measured ${error.measuredValue.toStringAsFixed(1)} / threshold ${error.threshold.toStringAsFixed(1)}';
   }
 }
 

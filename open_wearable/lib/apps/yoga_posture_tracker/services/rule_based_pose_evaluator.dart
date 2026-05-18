@@ -49,6 +49,66 @@ class RuleBasedPoseEvaluator {
     return PoseEvaluationResult(score: score, errors: errors);
   }
 
+  PoseEvaluationResult aggregateWindowResults(
+    List<PoseEvaluationResult> results,
+  ) {
+    if (results.isEmpty) {
+      return const PoseEvaluationResult(
+        score: 0,
+        errors: [
+          PostureError(
+            code: 'no_sensor_windows',
+            message: 'No pose windows were available for final scoring.',
+            severity: PostureErrorSeverity.severe,
+            measuredValue: 0,
+            threshold: 1,
+          ),
+        ],
+      );
+    }
+
+    final score = max(
+      0,
+      min(
+        100,
+        (results.fold<int>(0, (total, result) => total + result.score) /
+                results.length)
+            .round(),
+      ),
+    );
+
+    final groupedErrors = <String, List<PostureError>>{};
+    for (final result in results) {
+      for (final error in result.errors) {
+        groupedErrors.putIfAbsent(error.code, () => []).add(error);
+      }
+    }
+
+    final errors = groupedErrors.entries.map((entry) {
+      return _aggregateError(
+        errors: entry.value,
+        evaluatedWindowCount: results.length,
+      );
+    }).toList()
+      ..sort((a, b) {
+        final occurrenceCompare = b.occurrenceCount.compareTo(
+          a.occurrenceCount,
+        );
+        if (occurrenceCompare != 0) {
+          return occurrenceCompare;
+        }
+        final severityCompare = _severityRank(b.severity).compareTo(
+          _severityRank(a.severity),
+        );
+        if (severityCompare != 0) {
+          return severityCompare;
+        }
+        return a.code.compareTo(b.code);
+      });
+
+    return PoseEvaluationResult(score: score, errors: errors);
+  }
+
   void _evaluateHeadTilt(
     CalibrationData calibration,
     SensorWindow poseWindow,
@@ -78,6 +138,40 @@ class RuleBasedPoseEvaluator {
         ),
       );
     }
+  }
+
+  PostureError _aggregateError({
+    required List<PostureError> errors,
+    required int evaluatedWindowCount,
+  }) {
+    final first = errors.first;
+    final worst = errors.reduce(
+      (current, next) =>
+          _severityRank(next.severity) > _severityRank(current.severity)
+              ? next
+              : current,
+    );
+    final measuredAverage =
+        errors.fold<double>(0, (total, error) => total + error.measuredValue) /
+            errors.length;
+
+    return PostureError(
+      code: first.code,
+      message: first.message,
+      severity: worst.severity,
+      measuredValue: measuredAverage,
+      threshold: first.threshold,
+      occurrenceCount: errors.length,
+      evaluatedWindowCount: evaluatedWindowCount,
+    );
+  }
+
+  int _severityRank(PostureErrorSeverity severity) {
+    return switch (severity) {
+      PostureErrorSeverity.minor => 1,
+      PostureErrorSeverity.medium => 2,
+      PostureErrorSeverity.severe => 3,
+    };
   }
 
   void _evaluateHeadStability(

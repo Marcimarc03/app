@@ -49,6 +49,33 @@ class RuleBasedPoseEvaluator {
     return PoseEvaluationResult(score: score, errors: errors);
   }
 
+  List<PostureError> evaluateCalibrationStability({
+    required SensorWindow baselineWindow,
+    required RingAssignment ringAssignment,
+  }) {
+    final errors = <PostureError>[];
+    _evaluateCalibrationGyro(
+      code: 'calibration_head_moving',
+      message:
+          'Too much head movement was detected during calibration. Please stand still and recalibrate.',
+      samples: baselineWindow.earableGyroscopeSamples,
+      errors: errors,
+    );
+    _evaluateCalibrationRing(
+      side: 'left',
+      ringId: ringAssignment.leftRingId,
+      baselineWindow: baselineWindow,
+      errors: errors,
+    );
+    _evaluateCalibrationRing(
+      side: 'right',
+      ringId: ringAssignment.rightRingId,
+      baselineWindow: baselineWindow,
+      errors: errors,
+    );
+    return errors;
+  }
+
   PoseEvaluationResult aggregateWindowResults(
     List<PoseEvaluationResult> results,
   ) {
@@ -135,6 +162,48 @@ class RuleBasedPoseEvaluator {
               : PostureErrorSeverity.medium,
           measuredValue: tiltDegrees,
           threshold: YogaPostureTrackerThresholds.headTiltDegrees,
+        ),
+      );
+    }
+  }
+
+  void _evaluateCalibrationRing({
+    required String side,
+    required String? ringId,
+    required SensorWindow baselineWindow,
+    required List<PostureError> errors,
+  }) {
+    if (ringId == null) {
+      return;
+    }
+    _evaluateCalibrationGyro(
+      code: 'calibration_${side}_ring_moving',
+      message:
+          'Too much $side hand movement was detected during calibration. Please stand still and recalibrate.',
+      samples: baselineWindow.ringGyroscopeSamplesFor(ringId),
+      errors: errors,
+    );
+  }
+
+  void _evaluateCalibrationGyro({
+    required String code,
+    required String message,
+    required List<ImuSample> samples,
+    required List<PostureError> errors,
+  }) {
+    final gyroStats = vectorStats(samples);
+    if (!gyroStats.hasData) {
+      return;
+    }
+    if (gyroStats.meanMagnitude >
+        YogaPostureTrackerThresholds.calibrationGyroInstability) {
+      errors.add(
+        PostureError(
+          code: code,
+          message: message,
+          severity: PostureErrorSeverity.medium,
+          measuredValue: gyroStats.meanMagnitude,
+          threshold: YogaPostureTrackerThresholds.calibrationGyroInstability,
         ),
       );
     }

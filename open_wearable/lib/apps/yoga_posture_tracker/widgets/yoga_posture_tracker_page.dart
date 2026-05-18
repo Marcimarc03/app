@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:open_earable_flutter/open_earable_flutter.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/model/yoga_models.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/services/yoga_sensor_service.dart';
@@ -91,6 +92,7 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
         ),
       YogaSessionPhase.calibrationInstructions => _CalibrationInstructionScreen(
           devices: controller.devices,
+          warning: controller.calibrationWarning,
           onBeginCalibration: () =>
               unawaited(controller.beginCalibration(wearablesProvider)),
         ),
@@ -293,10 +295,12 @@ class _RingDropdown extends StatelessWidget {
 
 class _CalibrationInstructionScreen extends StatelessWidget {
   final YogaDeviceSet devices;
+  final String? warning;
   final VoidCallback onBeginCalibration;
 
   const _CalibrationInstructionScreen({
     required this.devices,
+    required this.warning,
     required this.onBeginCalibration,
   });
 
@@ -312,6 +316,10 @@ class _CalibrationInstructionScreen extends StatelessWidget {
           icon: Icons.accessibility_new_rounded,
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
+        if (warning != null) ...[
+          _CalibrationWarningCard(message: warning!),
+          const SizedBox(height: SensorPageSpacing.sectionGap),
+        ],
         _DeviceStatusCard(devices: devices),
         const SizedBox(height: SensorPageSpacing.sectionGap),
         _InfoCard(
@@ -337,6 +345,47 @@ class _CalibrationInstructionScreen extends StatelessWidget {
   }
 }
 
+class _CalibrationWarningCard extends StatelessWidget {
+  final String message;
+
+  const _CalibrationWarningCard({
+    required this.message,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.errorContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.motion_photos_pause_rounded,
+              color: colors.onErrorContainer,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: colors.onErrorContainer,
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PoseInstructionScreen extends StatelessWidget {
   final YogaPose pose;
   final VoidCallback onBeginHold;
@@ -357,6 +406,8 @@ class _PoseInstructionScreen extends StatelessWidget {
           icon: Icons.sports_gymnastics_rounded,
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
+        const _PoseImageCard(),
+        const SizedBox(height: SensorPageSpacing.sectionGap),
         _InfoCard(
           title: 'What is checked',
           icon: Icons.fact_check_rounded,
@@ -376,6 +427,28 @@ class _PoseInstructionScreen extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _PoseImageCard extends StatelessWidget {
+  const _PoseImageCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: AspectRatio(
+        aspectRatio: 1.35,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: SvgPicture.asset(
+            'lib/apps/yoga_posture_tracker/assets/warrior_ii_pose.svg',
+            fit: BoxFit.contain,
+            semanticsLabel: 'Warrior II pose',
+          ),
+        ),
+      ),
     );
   }
 }

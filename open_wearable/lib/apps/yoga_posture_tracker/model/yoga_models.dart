@@ -261,6 +261,7 @@ class YogaPostureTrackerThresholds {
   static const double headTiltDegrees = 20;
   static const double armGyroInstability = 120;
   static const double headGyroInstability = 120;
+  static const double calibrationGyroInstability = 80;
 }
 
 const YogaPose warriorTwoPose = YogaPose(

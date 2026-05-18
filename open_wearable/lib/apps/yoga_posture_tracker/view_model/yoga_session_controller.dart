@@ -25,6 +25,7 @@ class YogaSessionController with ChangeNotifier {
   PoseEvaluationResult? _evaluationResult;
   YogaFeedback? _feedback;
   SensorWindowQuality? _latestSignalQuality;
+  String? _calibrationWarning;
   RingAssignment _ringAssignment = const RingAssignment();
   int _remainingSeconds = 0;
   int _operationGeneration = 0;
@@ -50,6 +51,7 @@ class YogaSessionController with ChangeNotifier {
   PoseEvaluationResult? get evaluationResult => _evaluationResult;
   YogaFeedback? get feedback => _feedback;
   SensorWindowQuality? get latestSignalQuality => _latestSignalQuality;
+  String? get calibrationWarning => _calibrationWarning;
   RingAssignment get ringAssignment => _ringAssignment;
   int get remainingSeconds => _remainingSeconds;
   YogaPose get pose => warriorTwoPose;
@@ -72,13 +74,16 @@ class YogaSessionController with ChangeNotifier {
 
   Future<void> startSession(WearablesProvider wearablesProvider) async {
     _startNewOperation();
+    await _stopFeedbackPlayback();
     logger.i('Yoga session start');
     _evaluationResult = null;
     _feedback = null;
     _latestSignalQuality = null;
+    _calibrationWarning = null;
     _setPhase(YogaSessionPhase.checkingDevices);
     _devices = _sensorService.resolveDevices(wearablesProvider);
-    _ringAssignment = const RingAssignment();
+    _ringAssignment = _sensorService.defaultRingAssignment(_devices);
+    _devices = _devices.copyWith(ringAssignment: _ringAssignment);
     logger.i(
       'Yoga devices: earable=${_devices.earable?.name ?? 'none'}, '
       'rings=${_devices.rings.map((ring) => ring.name).join(', ')}',
@@ -139,6 +144,21 @@ class YogaSessionController with ChangeNotifier {
       window: baselineWindow,
       duration: calibrationDuration,
     );
+    final calibrationErrors = _poseEvaluator.evaluateCalibrationStability(
+      baselineWindow: baselineWindow,
+      ringAssignment: _ringAssignment,
+    );
+    if (calibrationErrors.isNotEmpty) {
+      _calibrationData = null;
+      _calibrationWarning = _buildCalibrationWarning(calibrationErrors);
+      logger.i(
+        'Yoga calibration rejected: '
+        '${calibrationErrors.map((error) => error.code).join(', ')}',
+      );
+      _setPhase(YogaSessionPhase.calibrationInstructions);
+      return;
+    }
+    _calibrationWarning = null;
     _calibrationData = CalibrationData(
       baselineWindow: baselineWindow,
       ringAssignment: _ringAssignment,
@@ -243,10 +263,12 @@ class YogaSessionController with ChangeNotifier {
   }
 
   Future<void> restartSession(WearablesProvider wearablesProvider) async {
+    await _stopFeedbackPlayback();
     _calibrationData = null;
     _evaluationResult = null;
     _feedback = null;
     _latestSignalQuality = null;
+    _calibrationWarning = null;
     _ringAssignment = const RingAssignment();
     await startSession(wearablesProvider);
   }
@@ -254,6 +276,7 @@ class YogaSessionController with ChangeNotifier {
   Future<void> stopSession(WearablesProvider wearablesProvider) async {
     final devices = _devices;
     _requestStop();
+    await _stopFeedbackPlayback();
     await _sensorService.turnOffYogaSensors(
       devices: devices,
       wearablesProvider: wearablesProvider,
@@ -266,6 +289,7 @@ class YogaSessionController with ChangeNotifier {
   Future<void> shutdown(WearablesProvider wearablesProvider) async {
     final devices = _devices;
     _requestStop();
+    await _stopFeedbackPlayback();
     await _sensorService.turnOffYogaSensors(
       devices: devices,
       wearablesProvider: wearablesProvider,
@@ -314,6 +338,25 @@ class YogaSessionController with ChangeNotifier {
   }
 
   Future<void>? get _cancelSignal => _cancelCompleter?.future;
+
+  Future<void> _stopFeedbackPlayback() async {
+    try {
+      await _ttsFeedbackService.stop();
+    } catch (error, stackTrace) {
+      logger.w(
+        'Yoga TTS feedback stop failed.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  String _buildCalibrationWarning(List<PostureError> errors) {
+    final primary = errors.first;
+    final measured = primary.measuredValue.toStringAsFixed(1);
+    final threshold = primary.threshold.toStringAsFixed(1);
+    return '${primary.message} Measured $measured / threshold $threshold.';
+  }
 
   int _startNewOperation() {
     _requestStop();

@@ -4,12 +4,16 @@ import 'dart:math';
 import 'package:open_earable_flutter/open_earable_flutter.dart' hide logger;
 import 'package:open_wearable/apps/widgets/app_compatibility.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/model/yoga_models.dart';
+import 'package:open_wearable/models/device_name_formatter.dart';
 import 'package:open_wearable/models/logger.dart';
 import 'package:open_wearable/models/sensor_streams.dart';
 import 'package:open_wearable/view_models/sensor_configuration_provider.dart';
 import 'package:open_wearable/view_models/wearables_provider.dart';
 
 class YogaSensorService {
+  static const String defaultLeftRingName = 'OpenRing-6033F92';
+  static const String defaultRightRingName = 'OpenRing-6036A35';
+
   YogaDeviceSet resolveDevices(WearablesProvider wearablesProvider) {
     Wearable? earable;
     final rings = <Wearable>[];
@@ -27,6 +31,13 @@ class YogaSensorService {
     return YogaDeviceSet(
       earable: earable,
       rings: rings,
+    );
+  }
+
+  RingAssignment defaultRingAssignment(YogaDeviceSet devices) {
+    return RingAssignment(
+      leftRingId: _findRingIdByDisplayName(devices, defaultLeftRingName),
+      rightRingId: _findRingIdByDisplayName(devices, defaultRightRingName),
     );
   }
 
@@ -238,6 +249,22 @@ class YogaSensorService {
         minimumSampleCount: minimumSampleCount,
       ),
     ];
+  }
+
+  String? _findRingIdByDisplayName(
+    YogaDeviceSet devices,
+    String targetName,
+  ) {
+    final normalizedTargetName = targetName.trim().toLowerCase();
+    for (final ring in devices.rings) {
+      final normalizedDisplayName = formatWearableDisplayName(
+        ring.name,
+      ).trim().toLowerCase();
+      if (normalizedDisplayName == normalizedTargetName) {
+        return ring.deviceId;
+      }
+    }
+    return null;
   }
 
   Sensor? _findSensor(List<Sensor> sensors, List<String> keywords) {

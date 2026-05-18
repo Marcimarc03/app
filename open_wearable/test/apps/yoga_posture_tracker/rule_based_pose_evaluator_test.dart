@@ -159,6 +159,42 @@ void main() {
       expect(result.errors.single.evaluatedWindowCount, 3);
       expect(result.errors.single.measuredValue, 31);
     });
+
+    test('rejects calibration windows with too much movement', () {
+      const movingBaseline = SensorWindow(
+        earableAccelerometerSamples: [
+          ImuSample(
+            deviceId: 'earable',
+            deviceName: 'OpenEarable',
+            sensorName: 'accelerometer',
+            timestamp: 1,
+            values: [0, 0, 1],
+          ),
+        ],
+        earableGyroscopeSamples: [
+          ImuSample(
+            deviceId: 'earable',
+            deviceName: 'OpenEarable',
+            sensorName: 'gyroscope',
+            timestamp: 1,
+            values: [100, 0, 0],
+          ),
+        ],
+        ringAccelerometerSamplesByDeviceId: {},
+        ringGyroscopeSamplesByDeviceId: {},
+      );
+
+      final errors = evaluator.evaluateCalibrationStability(
+        baselineWindow: movingBaseline,
+        ringAssignment: const RingAssignment(
+          leftRingId: leftRingId,
+          rightRingId: rightRingId,
+        ),
+      );
+
+      expect(errors, hasLength(1));
+      expect(errors.single.code, 'calibration_head_moving');
+    });
   });
 }
 

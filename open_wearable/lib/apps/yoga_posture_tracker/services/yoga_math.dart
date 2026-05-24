@@ -85,16 +85,67 @@ double estimateRollDegrees(List<double> values) {
   return atan2(ay, az) * 180 / pi;
 }
 
-double largestOrientationDeltaDegrees({
+double angleBetweenVectorsDegrees(
+  List<double> first,
+  List<double> second,
+) {
+  if (first.length < 3 || second.length < 3) {
+    return 0;
+  }
+  final firstMagnitude = _vectorMagnitude(first);
+  final secondMagnitude = _vectorMagnitude(second);
+  if (firstMagnitude == 0 || secondMagnitude == 0) {
+    return 0;
+  }
+  final dotProduct =
+      first[0] * second[0] + first[1] * second[1] + first[2] * second[2];
+  final normalizedDot =
+      (dotProduct / (firstMagnitude * secondMagnitude)).clamp(-1.0, 1.0);
+  return acos(normalizedDot) * 180 / pi;
+}
+
+OrientationDelta orientationDeltaDegrees({
   required List<double> baselineMean,
   required List<double> poseMean,
 }) {
-  final baselinePitch = estimatePitchDegrees(baselineMean);
-  final baselineRoll = estimateRollDegrees(baselineMean);
-  final posePitch = estimatePitchDegrees(poseMean);
-  final poseRoll = estimateRollDegrees(poseMean);
-  return max(
-    (posePitch - baselinePitch).abs(),
-    (poseRoll - baselineRoll).abs(),
+  return OrientationDelta(
+    pitch: wrappedAngleDeltaDegrees(
+      estimatePitchDegrees(poseMean),
+      estimatePitchDegrees(baselineMean),
+    ),
+    roll: wrappedAngleDeltaDegrees(
+      estimateRollDegrees(poseMean),
+      estimateRollDegrees(baselineMean),
+    ),
   );
+}
+
+double wrappedAngleDeltaDegrees(double current, double baseline) {
+  var delta = current - baseline;
+  while (delta > 180) {
+    delta -= 360;
+  }
+  while (delta < -180) {
+    delta += 360;
+  }
+  return delta;
+}
+
+double _vectorMagnitude(List<double> values) {
+  if (values.length < 3) {
+    return 0;
+  }
+  return sqrt(
+    values[0] * values[0] + values[1] * values[1] + values[2] * values[2],
+  );
+}
+
+class OrientationDelta {
+  final double pitch;
+  final double roll;
+
+  const OrientationDelta({
+    required this.pitch,
+    required this.roll,
+  });
 }

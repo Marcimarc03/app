@@ -41,8 +41,8 @@ class YogaSessionController with ChangeNotifier {
   })  : _sensorService = sensorService ?? YogaSensorService(),
         _poseEvaluator = poseEvaluator ?? const RuleBasedPoseEvaluator(),
         _llmFeedbackService = llmFeedbackService ?? GeminiLlmFeedbackService(),
-        _ttsFeedbackService =
-            ttsFeedbackService ?? const LoggingTtsFeedbackService() {
+        _ttsFeedbackService = ttsFeedbackService ??
+            YogaTtsFeedbackServiceFactory.fromEnvironment() {
     _cancelCompleter = Completer<void>();
   }
 
@@ -159,7 +159,7 @@ class YogaSessionController with ChangeNotifier {
       return;
     }
     _calibrationWarning = null;
-    _calibrationData = CalibrationData(
+    _calibrationData = CalibrationData.fromWindow(
       baselineWindow: baselineWindow,
       ringAssignment: _ringAssignment,
     );
@@ -181,68 +181,71 @@ class YogaSessionController with ChangeNotifier {
     _remainingSeconds = holdDuration.inSeconds;
     _notifyListeners();
 
+    final poseStream = _sensorService.startContinuousImuStreaming(
+      devices: _devices,
+      wearablesProvider: wearablesProvider,
+    );
     final windowResults = <PoseEvaluationResult>[];
     var secondsCollected = 0;
-    while (secondsCollected < holdDuration.inSeconds &&
-        _isOperationActive(generation)) {
-      final remaining = holdDuration.inSeconds - secondsCollected;
-      final windowSeconds = remaining < coachingWindowDuration.inSeconds
-          ? remaining
-          : coachingWindowDuration.inSeconds;
-      final windowDuration = Duration(seconds: windowSeconds);
+    var liveFeedbackInFlight = false;
+    try {
+      while (secondsCollected < holdDuration.inSeconds &&
+          _isOperationActive(generation)) {
+        final remaining = holdDuration.inSeconds - secondsCollected;
+        final windowSeconds = remaining < coachingWindowDuration.inSeconds
+            ? remaining
+            : coachingWindowDuration.inSeconds;
+        final windowDuration = Duration(seconds: windowSeconds);
 
-      final collectionFuture = _sensorService.collectWindow(
-        devices: _devices,
-        wearablesProvider: wearablesProvider,
-        duration: windowDuration,
-        cancelSignal: _cancelSignal,
-      );
-      final completed = await _countDownSegment(
-        windowDuration,
-        generation: generation,
-      );
-      final poseWindow = await collectionFuture;
-      if (!completed || !_isOperationActive(generation)) {
-        return;
+        final completed = await _countDownSegment(
+          windowDuration,
+          generation: generation,
+        );
+        if (!completed || !_isOperationActive(generation)) {
+          return;
+        }
+        secondsCollected += windowSeconds;
+        final poseWindow = poseStream.drainWindow();
+        _latestSignalQuality = _sensorService.assessSignalQuality(
+          devices: _devices,
+          window: poseWindow,
+          duration: windowDuration,
+        );
+
+        final result = _poseEvaluator.evaluateWarriorTwo(
+          calibration: calibrationData,
+          poseWindow: poseWindow,
+        );
+        windowResults.add(result);
+        _evaluationResult = result;
+        logger.i(
+          'Yoga live evaluation result: score=${result.score}, '
+          'errors=${result.errors.map((error) => error.code).join(', ')}',
+        );
+        _notifyListeners();
+
+        final isFinalWindow = secondsCollected >= holdDuration.inSeconds;
+        if (!isFinalWindow && !liveFeedbackInFlight) {
+          liveFeedbackInFlight = true;
+          unawaited(
+            _generateAndSpeakLiveFeedback(
+              generation: generation,
+              result: result,
+            ).whenComplete(() {
+              liveFeedbackInFlight = false;
+            }),
+          );
+        }
       }
-      secondsCollected += windowSeconds;
-      _latestSignalQuality = _sensorService.assessSignalQuality(
-        devices: _devices,
-        window: poseWindow,
-        duration: windowDuration,
-      );
-
-      final result = _poseEvaluator.evaluateWarriorTwo(
-        calibration: calibrationData,
-        poseWindow: poseWindow,
-      );
-      windowResults.add(result);
-      _evaluationResult = result;
-      logger.i(
-        'Yoga live evaluation result: score=${result.score}, '
-        'errors=${result.errors.map((error) => error.code).join(', ')}',
-      );
-
-      final generatedFeedback = await _llmFeedbackService.generateYogaFeedback(
-        postureErrors: result.errors,
-        poseName: pose.name,
-        score: result.score,
-      );
-      if (!_isOperationActive(generation)) {
-        return;
-      }
-      _feedback = generatedFeedback;
-      logger.i(
-        'Yoga live feedback generated: ${generatedFeedback.recommendation}',
-      );
-      _notifyListeners();
-      await _ttsFeedbackService.speak(generatedFeedback.recommendation);
+    } finally {
+      await poseStream.dispose();
     }
 
     if (!_isOperationActive(generation)) {
       return;
     }
     _setPhase(YogaSessionPhase.evaluating);
+    await _stopFeedbackPlayback();
     final finalResult = _poseEvaluator.aggregateWindowResults(windowResults);
     _evaluationResult = finalResult;
     final finalFeedback = await _llmFeedbackService.generateYogaFeedback(
@@ -260,6 +263,35 @@ class YogaSessionController with ChangeNotifier {
     );
     _setPhase(YogaSessionPhase.feedback);
     _setPhase(YogaSessionPhase.result);
+  }
+
+  Future<void> _generateAndSpeakLiveFeedback({
+    required int generation,
+    required PoseEvaluationResult result,
+  }) async {
+    try {
+      final generatedFeedback = await _llmFeedbackService.generateYogaFeedback(
+        postureErrors: result.errors,
+        poseName: pose.name,
+        score: result.score,
+      );
+      if (!_isOperationActive(generation) ||
+          _phase != YogaSessionPhase.holdingPose) {
+        return;
+      }
+      _feedback = generatedFeedback;
+      logger.i(
+        'Yoga live feedback generated: ${generatedFeedback.recommendation}',
+      );
+      _notifyListeners();
+      await _ttsFeedbackService.speak(generatedFeedback.recommendation);
+    } catch (error, stackTrace) {
+      logger.w(
+        'Yoga live feedback generation failed.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
   }
 
   Future<void> restartSession(WearablesProvider wearablesProvider) async {
@@ -391,6 +423,7 @@ class YogaSessionController with ChangeNotifier {
   void dispose() {
     _isDisposed = true;
     _requestStop();
+    unawaited(_ttsFeedbackService.dispose());
     super.dispose();
   }
 }

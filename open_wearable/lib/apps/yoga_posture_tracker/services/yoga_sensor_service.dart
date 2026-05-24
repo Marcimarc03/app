@@ -47,14 +47,28 @@ class YogaSensorService {
     required Duration duration,
     Future<void>? cancelSignal,
   }) async {
-    final earableAccelerometer = <ImuSample>[];
-    final earableGyroscope = <ImuSample>[];
-    final ringAccelerometers = <String, List<ImuSample>>{
-      for (final ring in devices.rings) ring.deviceId: <ImuSample>[],
-    };
-    final ringGyroscopes = <String, List<ImuSample>>{
-      for (final ring in devices.rings) ring.deviceId: <ImuSample>[],
-    };
+    final stream = startContinuousImuStreaming(
+      devices: devices,
+      wearablesProvider: wearablesProvider,
+    );
+    try {
+      await _delayOrCancel(duration, cancelSignal);
+      final window = stream.drainWindow();
+      logger.i(
+        'Yoga sensor window collected ${window.totalSampleCount} samples '
+        'over ${duration.inMilliseconds}ms',
+      );
+      return window;
+    } finally {
+      await stream.dispose();
+    }
+  }
+
+  YogaImuStreamSession startContinuousImuStreaming({
+    required YogaDeviceSet devices,
+    required WearablesProvider wearablesProvider,
+  }) {
+    final buffers = _YogaImuSampleBuffers.forDevices(devices);
     final subscriptions = <StreamSubscription<SensorValue>>[];
 
     void subscribe({
@@ -97,7 +111,7 @@ class YogaSensorService {
         subscribe(
           wearable: earable,
           sensor: accelerometer,
-          target: earableAccelerometer,
+          target: buffers.earableAccelerometer,
         );
       }
       if (gyroscope != null) {
@@ -105,7 +119,7 @@ class YogaSensorService {
         subscribe(
           wearable: earable,
           sensor: gyroscope,
-          target: earableGyroscope,
+          target: buffers.earableGyroscope,
         );
       }
     }
@@ -127,7 +141,7 @@ class YogaSensorService {
         subscribe(
           wearable: ring,
           sensor: accelerometer,
-          target: ringAccelerometers[ring.deviceId]!,
+          target: buffers.ringAccelerometers[ring.deviceId]!,
         );
       }
       if (gyroscope != null) {
@@ -135,27 +149,18 @@ class YogaSensorService {
         subscribe(
           wearable: ring,
           sensor: gyroscope,
-          target: ringGyroscopes[ring.deviceId]!,
+          target: buffers.ringGyroscopes[ring.deviceId]!,
         );
       }
     }
 
-    await _delayOrCancel(duration, cancelSignal);
-    for (final subscription in subscriptions) {
-      await subscription.cancel();
-    }
-
-    final window = SensorWindow(
-      earableAccelerometerSamples: earableAccelerometer,
-      earableGyroscopeSamples: earableGyroscope,
-      ringAccelerometerSamplesByDeviceId: ringAccelerometers,
-      ringGyroscopeSamplesByDeviceId: ringGyroscopes,
-    );
     logger.i(
-      'Yoga sensor window collected ${window.totalSampleCount} samples '
-      'over ${duration.inMilliseconds}ms',
+      'Yoga continuous IMU stream started with ${subscriptions.length} streams',
     );
-    return window;
+    return YogaImuStreamSession._(
+      buffers: buffers,
+      subscriptions: subscriptions,
+    );
   }
 
   SensorWindowQuality assessSignalQuality({
@@ -334,5 +339,87 @@ class YogaSensorService {
     }
     frequencyValues.sort((a, b) => b.frequencyHz.compareTo(a.frequencyHz));
     return frequencyValues.first;
+  }
+}
+
+class YogaImuStreamSession {
+  final _YogaImuSampleBuffers _buffers;
+  final List<StreamSubscription<SensorValue>> _subscriptions;
+  bool _disposed = false;
+
+  YogaImuStreamSession._({
+    required _YogaImuSampleBuffers buffers,
+    required List<StreamSubscription<SensorValue>> subscriptions,
+  })  : _buffers = buffers,
+        _subscriptions = subscriptions;
+
+  SensorWindow drainWindow() {
+    final window = _buffers.drainWindow();
+    logger.i(
+      'Yoga continuous IMU stream drained ${window.totalSampleCount} samples',
+    );
+    return window;
+  }
+
+  Future<void> dispose() async {
+    if (_disposed) {
+      return;
+    }
+    _disposed = true;
+    for (final subscription in _subscriptions) {
+      await subscription.cancel();
+    }
+    logger.i('Yoga continuous IMU stream stopped');
+  }
+}
+
+class _YogaImuSampleBuffers {
+  final List<ImuSample> earableAccelerometer;
+  final List<ImuSample> earableGyroscope;
+  final Map<String, List<ImuSample>> ringAccelerometers;
+  final Map<String, List<ImuSample>> ringGyroscopes;
+
+  _YogaImuSampleBuffers({
+    required this.earableAccelerometer,
+    required this.earableGyroscope,
+    required this.ringAccelerometers,
+    required this.ringGyroscopes,
+  });
+
+  factory _YogaImuSampleBuffers.forDevices(YogaDeviceSet devices) {
+    return _YogaImuSampleBuffers(
+      earableAccelerometer: <ImuSample>[],
+      earableGyroscope: <ImuSample>[],
+      ringAccelerometers: <String, List<ImuSample>>{
+        for (final ring in devices.rings) ring.deviceId: <ImuSample>[],
+      },
+      ringGyroscopes: <String, List<ImuSample>>{
+        for (final ring in devices.rings) ring.deviceId: <ImuSample>[],
+      },
+    );
+  }
+
+  SensorWindow drainWindow() {
+    final window = SensorWindow(
+      earableAccelerometerSamples: List<ImuSample>.of(earableAccelerometer),
+      earableGyroscopeSamples: List<ImuSample>.of(earableGyroscope),
+      ringAccelerometerSamplesByDeviceId: {
+        for (final entry in ringAccelerometers.entries)
+          entry.key: List<ImuSample>.of(entry.value),
+      },
+      ringGyroscopeSamplesByDeviceId: {
+        for (final entry in ringGyroscopes.entries)
+          entry.key: List<ImuSample>.of(entry.value),
+      },
+    );
+    earableAccelerometer.clear();
+    earableGyroscope.clear();
+    for (final samples in ringAccelerometers.values) {
+      samples.clear();
+    }
+    for (final samples in ringGyroscopes.values) {
+      samples.clear();
+    }
+    return window;
   }
 }

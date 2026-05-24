@@ -200,12 +200,30 @@ class TemplateLlmFeedbackService implements LlmFeedbackService {
         'Raise your left arm toward shoulder height and broaden across the chest.',
       'right_arm_too_low' =>
         'Raise your right arm toward shoulder height and keep both arms active.',
+      'left_arm_too_high' =>
+        'Lower your left arm slightly until both hands are near shoulder height.',
+      'right_arm_too_high' =>
+        'Lower your right arm slightly until both hands are near shoulder height.',
+      'left_arm_higher' =>
+        'Lower your left hand slightly so both arms form one steady line.',
+      'right_arm_higher' =>
+        'Lower your right hand slightly so both arms form one steady line.',
+      'left_palm_not_rotated_down' =>
+        'Rotate your left palm more toward the floor while keeping the arm long.',
+      'right_palm_not_rotated_down' =>
+        'Rotate your right palm more toward the floor while keeping the arm long.',
+      'left_palm_over_rotated' =>
+        'Turn your left palm gently back toward the floor.',
+      'right_palm_over_rotated' =>
+        'Turn your right palm gently back toward the floor.',
       'left_arm_unstable' =>
         'Soften your left shoulder, reach through the fingertips, and reduce small movements.',
       'right_arm_unstable' =>
         'Soften your right shoulder, reach through the fingertips, and reduce small movements.',
-      'head_tilted' =>
-        'Bring your head back to neutral and let your gaze follow the front hand.',
+      'head_pitch_tilted' =>
+        'Bring your head level and keep your gaze calm over the front hand.',
+      'head_roll_tilted' =>
+        'Keep your head upright without tilting it to the side.',
       'head_unstable' =>
         'Keep your neck long and make the head position quiet and steady.',
       'left_ring_data_missing' =>

@@ -192,11 +192,99 @@ class SensorWindowQuality {
 class CalibrationData {
   final SensorWindow baselineWindow;
   final RingAssignment ringAssignment;
+  final Map<String, SensorStartOrientation> startOrientations;
 
   const CalibrationData({
     required this.baselineWindow,
     required this.ringAssignment,
+    this.startOrientations = const {},
   });
+
+  factory CalibrationData.fromWindow({
+    required SensorWindow baselineWindow,
+    required RingAssignment ringAssignment,
+  }) {
+    final startOrientations = <String, SensorStartOrientation>{};
+    _addStartOrientation(
+      startOrientations,
+      key: SensorStartOrientation.earableAccelerometerKey,
+      samples: baselineWindow.earableAccelerometerSamples,
+    );
+    _addStartOrientation(
+      startOrientations,
+      key: SensorStartOrientation.earableGyroscopeKey,
+      samples: baselineWindow.earableGyroscopeSamples,
+    );
+    for (final entry
+        in baselineWindow.ringAccelerometerSamplesByDeviceId.entries) {
+      _addStartOrientation(
+        startOrientations,
+        key: SensorStartOrientation.ringAccelerometerKey(entry.key),
+        samples: entry.value,
+      );
+    }
+    for (final entry in baselineWindow.ringGyroscopeSamplesByDeviceId.entries) {
+      _addStartOrientation(
+        startOrientations,
+        key: SensorStartOrientation.ringGyroscopeKey(entry.key),
+        samples: entry.value,
+      );
+    }
+
+    return CalibrationData(
+      baselineWindow: baselineWindow,
+      ringAssignment: ringAssignment,
+      startOrientations: startOrientations,
+    );
+  }
+
+  static void _addStartOrientation(
+    Map<String, SensorStartOrientation> startOrientations, {
+    required String key,
+    required List<ImuSample> samples,
+  }) {
+    if (samples.isEmpty) {
+      return;
+    }
+    final width = samples.first.values.length;
+    if (width == 0) {
+      return;
+    }
+    final meanVector = List<double>.filled(width, 0);
+    for (final sample in samples) {
+      for (var i = 0; i < width && i < sample.values.length; i++) {
+        meanVector[i] += sample.values[i];
+      }
+    }
+    for (var i = 0; i < meanVector.length; i++) {
+      meanVector[i] /= samples.length;
+    }
+    startOrientations[key] = SensorStartOrientation(
+      key: key,
+      meanVector: meanVector,
+    );
+  }
+}
+
+class SensorStartOrientation {
+  static const String earableAccelerometerKey = 'earable:accelerometer';
+  static const String earableGyroscopeKey = 'earable:gyroscope';
+
+  final String key;
+  final List<double> meanVector;
+
+  const SensorStartOrientation({
+    required this.key,
+    required this.meanVector,
+  });
+
+  static String ringAccelerometerKey(String deviceId) {
+    return 'ring:$deviceId:accelerometer';
+  }
+
+  static String ringGyroscopeKey(String deviceId) {
+    return 'ring:$deviceId:gyroscope';
+  }
 }
 
 enum PostureErrorSeverity {
@@ -256,9 +344,20 @@ class YogaFeedback {
 }
 
 class YogaPostureTrackerThresholds {
-  static const double expectedWarriorArmLiftDegrees = 50;
-  static const double armTooLowToleranceDegrees = 20;
-  static const double headTiltDegrees = 20;
+  static const double armElevationPerfectMinDegrees = 85;
+  static const double armElevationPerfectMaxDegrees = 95;
+  static const double armElevationGoodMinDegrees = 80;
+  static const double armElevationGoodMaxDegrees = 100;
+  static const double armHeightDifferencePerfectDegrees = 5;
+  static const double armHeightDifferenceGoodDegrees = 10;
+  static const double palmRotationPerfectMinDegrees = 80;
+  static const double palmRotationPerfectMaxDegrees = 100;
+  static const double palmRotationGoodMinDegrees = 70;
+  static const double palmRotationGoodMaxDegrees = 110;
+  static const double palmRotationSevereLowDegrees = 40;
+  static const double palmRotationSevereHighDegrees = 120;
+  static const double headPitchRollPerfectDegrees = 5;
+  static const double headPitchRollGoodDegrees = 10;
   static const double armGyroInstability = 120;
   static const double headGyroInstability = 120;
   static const double calibrationGyroInstability = 80;

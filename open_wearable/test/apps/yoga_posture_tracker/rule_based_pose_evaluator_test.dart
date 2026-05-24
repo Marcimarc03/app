@@ -78,8 +78,8 @@ void main() {
       final result = evaluator.evaluateWarriorTwo(
         calibration: calibration,
         poseWindow: _poseWindow(
-          leftArmVector: _sixtyDegreePitchVector,
-          rightArmVector: _sixtyDegreePitchVector,
+          leftArmVector: _warriorTwoArmVector,
+          rightArmVector: _warriorTwoArmVector,
         ),
       );
 
@@ -96,10 +96,45 @@ void main() {
         ),
       );
 
-      expect(result.score, 60);
+      expect(result.score, 38);
       expect(
         result.errors.map((error) => error.code),
-        containsAll(['left_arm_too_low', 'right_arm_too_low']),
+        containsAll([
+          'left_arm_too_low',
+          'right_arm_too_low',
+          'left_palm_not_rotated_down',
+          'right_palm_not_rotated_down',
+        ]),
+      );
+    });
+
+    test('detects arms above shoulder height', () {
+      final result = evaluator.evaluateWarriorTwo(
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          leftArmVector: [0, 0.5, -0.8660254038],
+          rightArmVector: _warriorTwoArmVector,
+        ),
+      );
+
+      expect(
+        result.errors.map((error) => error.code),
+        contains('left_arm_too_high'),
+      );
+    });
+
+    test('detects uneven hand height', () {
+      final result = evaluator.evaluateWarriorTwo(
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          leftArmVector: _warriorTwoArmVector,
+          rightArmVector: [0, 0.5, 0.8660254038],
+        ),
+      );
+
+      expect(
+        result.errors.map((error) => error.code),
+        contains('left_arm_higher'),
       );
     });
 
@@ -116,7 +151,7 @@ void main() {
         poseWindow: emptyWindow,
       );
 
-      expect(result.score, 10);
+      expect(result.score, 0);
       expect(
         result.errors.map((error) => error.code),
         containsAll([
@@ -198,7 +233,7 @@ void main() {
   });
 }
 
-const List<double> _sixtyDegreePitchVector = [-0.8660254038, 0.0, 0.5];
+const List<double> _warriorTwoArmVector = [0.0, 1.0, 0.0];
 
 SensorWindow _poseWindow({
   required List<double> leftArmVector,

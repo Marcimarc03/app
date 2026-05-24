@@ -4,6 +4,14 @@ import 'package:open_wearable/apps/yoga_posture_tracker/model/yoga_models.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/services/yoga_math.dart';
 
 class RuleBasedPoseEvaluator {
+  static const double _armElevationWeight = 15;
+  static const double _armHeightSymmetryWeight = 15;
+  static const double _palmRotationWeight = 10;
+  static const double _headPitchWeight = 5;
+  static const double _headRollWeight = 5;
+  static const double _stabilityWeight = 5;
+  static const double _measurableScoreTotal = 80;
+
   const RuleBasedPoseEvaluator();
 
   PoseEvaluationResult evaluateWarriorTwo({
@@ -11,22 +19,46 @@ class RuleBasedPoseEvaluator {
     required SensorWindow poseWindow,
   }) {
     final errors = <PostureError>[];
-    _evaluateHeadTilt(calibration, poseWindow, errors);
-    _evaluateHeadStability(poseWindow, errors);
-    _evaluateRingArm(
+    var earnedScore = 0.0;
+
+    earnedScore += _evaluateHeadNeutral(calibration, poseWindow, errors);
+    final headStable = _evaluateHeadStability(poseWindow, errors);
+
+    final leftArm = _evaluateRingArm(
       side: 'left',
       ringId: calibration.ringAssignment.leftRingId,
       calibration: calibration,
       poseWindow: poseWindow,
       errors: errors,
     );
-    _evaluateRingArm(
+    if (leftArm != null) {
+      earnedScore += leftArm.elevationScore + leftArm.palmRotationScore;
+    }
+
+    final rightArm = _evaluateRingArm(
       side: 'right',
       ringId: calibration.ringAssignment.rightRingId,
       calibration: calibration,
       poseWindow: poseWindow,
       errors: errors,
     );
+    if (rightArm != null) {
+      earnedScore += rightArm.elevationScore + rightArm.palmRotationScore;
+    }
+
+    if (leftArm != null && rightArm != null) {
+      earnedScore += _evaluateArmHeightSymmetry(
+        leftArm: leftArm,
+        rightArm: rightArm,
+        errors: errors,
+      );
+    }
+
+    if (headStable &&
+        (leftArm?.isStable ?? false) &&
+        (rightArm?.isStable ?? false)) {
+      earnedScore += _stabilityWeight;
+    }
 
     if (poseWindow.totalSampleCount == 0) {
       errors.add(
@@ -40,11 +72,10 @@ class RuleBasedPoseEvaluator {
       );
     }
 
-    final penalty = errors.fold<int>(
+    final score = max(
       0,
-      (total, error) => total + error.scorePenalty,
+      min(100, (earnedScore / _measurableScoreTotal * 100).round()),
     );
-    final score = max(0, min(100, 100 - penalty));
 
     return PoseEvaluationResult(score: score, errors: errors);
   }
@@ -136,35 +167,70 @@ class RuleBasedPoseEvaluator {
     return PoseEvaluationResult(score: score, errors: errors);
   }
 
-  void _evaluateHeadTilt(
+  double _evaluateHeadNeutral(
     CalibrationData calibration,
     SensorWindow poseWindow,
     List<PostureError> errors,
   ) {
-    final baselineStats =
-        vectorStats(calibration.baselineWindow.earableAccelerometerSamples);
+    final baselineMean = _baselineMean(
+      calibration: calibration,
+      key: SensorStartOrientation.earableAccelerometerKey,
+      fallbackSamples: calibration.baselineWindow.earableAccelerometerSamples,
+    );
     final poseStats = vectorStats(poseWindow.earableAccelerometerSamples);
-    if (!baselineStats.hasData || !poseStats.hasData) {
-      return;
+    if (baselineMean.isEmpty || !poseStats.hasData) {
+      return 0;
     }
 
-    final tiltDegrees = largestOrientationDeltaDegrees(
-      baselineMean: baselineStats.mean,
+    final delta = orientationDeltaDegrees(
+      baselineMean: baselineMean,
       poseMean: poseStats.mean,
     );
-    if (tiltDegrees > YogaPostureTrackerThresholds.headTiltDegrees) {
+    final pitch = delta.pitch.abs();
+    final roll = delta.roll.abs();
+
+    final pitchScore = _absoluteThresholdScore(
+      value: pitch,
+      perfectMax: YogaPostureTrackerThresholds.headPitchRollPerfectDegrees,
+      goodMax: YogaPostureTrackerThresholds.headPitchRollGoodDegrees,
+      weight: _headPitchWeight,
+    );
+    final rollScore = _absoluteThresholdScore(
+      value: roll,
+      perfectMax: YogaPostureTrackerThresholds.headPitchRollPerfectDegrees,
+      goodMax: YogaPostureTrackerThresholds.headPitchRollGoodDegrees,
+      weight: _headRollWeight,
+    );
+
+    if (pitch > YogaPostureTrackerThresholds.headPitchRollGoodDegrees) {
       errors.add(
         PostureError(
-          code: 'head_tilted',
-          message: 'Your head is tilted too far from the calibrated neutral.',
-          severity: tiltDegrees > 35
+          code: 'head_pitch_tilted',
+          message:
+              'Keep your head level instead of nodding up or down in Warrior II.',
+          severity: pitch > 20
               ? PostureErrorSeverity.severe
               : PostureErrorSeverity.medium,
-          measuredValue: tiltDegrees,
-          threshold: YogaPostureTrackerThresholds.headTiltDegrees,
+          measuredValue: pitch,
+          threshold: YogaPostureTrackerThresholds.headPitchRollGoodDegrees,
         ),
       );
     }
+    if (roll > YogaPostureTrackerThresholds.headPitchRollGoodDegrees) {
+      errors.add(
+        PostureError(
+          code: 'head_roll_tilted',
+          message: 'Keep your head upright instead of tilting it to the side.',
+          severity: roll > 20
+              ? PostureErrorSeverity.severe
+              : PostureErrorSeverity.medium,
+          measuredValue: roll,
+          threshold: YogaPostureTrackerThresholds.headPitchRollGoodDegrees,
+        ),
+      );
+    }
+
+    return pitchScore + rollScore;
   }
 
   void _evaluateCalibrationRing({
@@ -243,29 +309,20 @@ class RuleBasedPoseEvaluator {
     };
   }
 
-  void _evaluateHeadStability(
+  bool _evaluateHeadStability(
     SensorWindow poseWindow,
     List<PostureError> errors,
   ) {
-    final gyroStats = vectorStats(poseWindow.earableGyroscopeSamples);
-    if (!gyroStats.hasData) {
-      return;
-    }
-    if (gyroStats.meanMagnitude >
-        YogaPostureTrackerThresholds.headGyroInstability) {
-      errors.add(
-        PostureError(
-          code: 'head_unstable',
-          message: 'Your head is moving too much during the hold.',
-          severity: PostureErrorSeverity.minor,
-          measuredValue: gyroStats.meanMagnitude,
-          threshold: YogaPostureTrackerThresholds.headGyroInstability,
-        ),
-      );
-    }
+    return _evaluateGyroStability(
+      code: 'head_unstable',
+      message: 'Your head is moving too much during the hold.',
+      samples: poseWindow.earableGyroscopeSamples,
+      threshold: YogaPostureTrackerThresholds.headGyroInstability,
+      errors: errors,
+    );
   }
 
-  void _evaluateRingArm({
+  _ArmPoseMetrics? _evaluateRingArm({
     required String side,
     required String? ringId,
     required CalibrationData calibration,
@@ -282,35 +339,18 @@ class RuleBasedPoseEvaluator {
           threshold: 1,
         ),
       );
-      return;
+      return null;
     }
 
-    _evaluateArmLift(
-      side: side,
-      ringId: ringId,
+    final baselineMean = _baselineMean(
       calibration: calibration,
-      poseWindow: poseWindow,
-      errors: errors,
+      key: SensorStartOrientation.ringAccelerometerKey(ringId),
+      fallbackSamples:
+          calibration.baselineWindow.ringAccelerometerSamplesFor(ringId),
     );
-    _evaluateArmStability(
-      side: side,
-      ringId: ringId,
-      poseWindow: poseWindow,
-      errors: errors,
-    );
-  }
-
-  void _evaluateArmLift({
-    required String side,
-    required String ringId,
-    required CalibrationData calibration,
-    required SensorWindow poseWindow,
-    required List<PostureError> errors,
-  }) {
-    final baselineSamples =
-        calibration.baselineWindow.ringAccelerometerSamplesFor(ringId);
     final poseSamples = poseWindow.ringAccelerometerSamplesFor(ringId);
-    if (baselineSamples.isEmpty || poseSamples.isEmpty) {
+    final poseStats = vectorStats(poseSamples);
+    if (baselineMean.isEmpty || !poseStats.hasData) {
       errors.add(
         PostureError(
           code: '${side}_ring_data_missing',
@@ -320,63 +360,271 @@ class RuleBasedPoseEvaluator {
           threshold: 1,
         ),
       );
-      return;
+      return null;
     }
 
-    final baselineStats = vectorStats(baselineSamples);
-    final poseStats = vectorStats(poseSamples);
-    if (!baselineStats.hasData || !poseStats.hasData) {
-      return;
-    }
-
-    // This is a gravity-vector proxy, not a full anatomical arm angle.
-    // TODO: Replace with a calibrated ring orientation model once ring
-    // placement and hand assignment are fixed for the study protocol.
-    final liftDegrees = largestOrientationDeltaDegrees(
-      baselineMean: baselineStats.mean,
-      poseMean: poseStats.mean,
+    final elevationDegrees = angleBetweenVectorsDegrees(
+      baselineMean,
+      poseStats.mean,
     );
-    final minimumAcceptedLift =
-        YogaPostureTrackerThresholds.expectedWarriorArmLiftDegrees -
-            YogaPostureTrackerThresholds.armTooLowToleranceDegrees;
-    if (liftDegrees < minimumAcceptedLift) {
+    final elevationScore = _rangeScore(
+      value: elevationDegrees,
+      perfectMin: YogaPostureTrackerThresholds.armElevationPerfectMinDegrees,
+      perfectMax: YogaPostureTrackerThresholds.armElevationPerfectMaxDegrees,
+      goodMin: YogaPostureTrackerThresholds.armElevationGoodMinDegrees,
+      goodMax: YogaPostureTrackerThresholds.armElevationGoodMaxDegrees,
+      weight: _armElevationWeight,
+    );
+    _addArmElevationErrors(
+      side: side,
+      elevationDegrees: elevationDegrees,
+      errors: errors,
+    );
+
+    // Palm rotation is a ring-roll proxy relative to the calibrated hand pose.
+    // With only hand-mounted rings this is still not an anatomical wrist model,
+    // but it avoids evaluating absolute world angles.
+    final palmRotationDegrees = orientationDeltaDegrees(
+      baselineMean: baselineMean,
+      poseMean: poseStats.mean,
+    ).roll.abs();
+    final palmRotationScore = _rangeScore(
+      value: palmRotationDegrees,
+      perfectMin: YogaPostureTrackerThresholds.palmRotationPerfectMinDegrees,
+      perfectMax: YogaPostureTrackerThresholds.palmRotationPerfectMaxDegrees,
+      goodMin: YogaPostureTrackerThresholds.palmRotationGoodMinDegrees,
+      goodMax: YogaPostureTrackerThresholds.palmRotationGoodMaxDegrees,
+      weight: _palmRotationWeight,
+    );
+    _addPalmRotationErrors(
+      side: side,
+      palmRotationDegrees: palmRotationDegrees,
+      errors: errors,
+    );
+
+    final isStable = _evaluateArmStability(
+      side: side,
+      ringId: ringId,
+      poseWindow: poseWindow,
+      errors: errors,
+    );
+
+    return _ArmPoseMetrics(
+      elevationDegrees: elevationDegrees,
+      elevationScore: elevationScore,
+      palmRotationScore: palmRotationScore,
+      isStable: isStable,
+    );
+  }
+
+  void _addArmElevationErrors({
+    required String side,
+    required double elevationDegrees,
+    required List<PostureError> errors,
+  }) {
+    if (elevationDegrees <
+        YogaPostureTrackerThresholds.armElevationGoodMinDegrees) {
       errors.add(
         PostureError(
           code: '${side}_arm_too_low',
-          message: 'Your $side arm appears to be too low for Warrior II.',
-          severity: PostureErrorSeverity.medium,
-          measuredValue: liftDegrees,
-          threshold: minimumAcceptedLift,
+          message: 'Raise your $side arm toward shoulder height.',
+          severity: elevationDegrees < 70
+              ? PostureErrorSeverity.severe
+              : PostureErrorSeverity.medium,
+          measuredValue: elevationDegrees,
+          threshold: YogaPostureTrackerThresholds.armElevationGoodMinDegrees,
+        ),
+      );
+      return;
+    }
+    if (elevationDegrees >
+        YogaPostureTrackerThresholds.armElevationGoodMaxDegrees) {
+      errors.add(
+        PostureError(
+          code: '${side}_arm_too_high',
+          message:
+              'Your $side arm is above shoulder height. Lower it slightly and keep the shoulder relaxed.',
+          severity: elevationDegrees > 110
+              ? PostureErrorSeverity.severe
+              : PostureErrorSeverity.medium,
+          measuredValue: elevationDegrees,
+          threshold: YogaPostureTrackerThresholds.armElevationGoodMaxDegrees,
         ),
       );
     }
   }
 
-  void _evaluateArmStability({
+  void _addPalmRotationErrors({
+    required String side,
+    required double palmRotationDegrees,
+    required List<PostureError> errors,
+  }) {
+    if (palmRotationDegrees <
+        YogaPostureTrackerThresholds.palmRotationGoodMinDegrees) {
+      errors.add(
+        PostureError(
+          code: '${side}_palm_not_rotated_down',
+          message:
+              'Rotate your $side palm more toward the floor while keeping the arm long.',
+          severity: palmRotationDegrees <=
+                  YogaPostureTrackerThresholds.palmRotationSevereLowDegrees
+              ? PostureErrorSeverity.severe
+              : PostureErrorSeverity.medium,
+          measuredValue: palmRotationDegrees,
+          threshold: YogaPostureTrackerThresholds.palmRotationGoodMinDegrees,
+        ),
+      );
+      return;
+    }
+    if (palmRotationDegrees >
+        YogaPostureTrackerThresholds.palmRotationGoodMaxDegrees) {
+      errors.add(
+        PostureError(
+          code: '${side}_palm_over_rotated',
+          message:
+              'Rotate your $side palm back toward the floor; it appears turned too far.',
+          severity: palmRotationDegrees >=
+                  YogaPostureTrackerThresholds.palmRotationSevereHighDegrees
+              ? PostureErrorSeverity.severe
+              : PostureErrorSeverity.medium,
+          measuredValue: palmRotationDegrees,
+          threshold: YogaPostureTrackerThresholds.palmRotationGoodMaxDegrees,
+        ),
+      );
+    }
+  }
+
+  double _evaluateArmHeightSymmetry({
+    required _ArmPoseMetrics leftArm,
+    required _ArmPoseMetrics rightArm,
+    required List<PostureError> errors,
+  }) {
+    final difference =
+        (leftArm.elevationDegrees - rightArm.elevationDegrees).abs();
+    final score = _absoluteThresholdScore(
+      value: difference,
+      perfectMax:
+          YogaPostureTrackerThresholds.armHeightDifferencePerfectDegrees,
+      goodMax: YogaPostureTrackerThresholds.armHeightDifferenceGoodDegrees,
+      weight: _armHeightSymmetryWeight,
+    );
+    if (difference >
+        YogaPostureTrackerThresholds.armHeightDifferenceGoodDegrees) {
+      final leftIsHigher = leftArm.elevationDegrees > rightArm.elevationDegrees;
+      errors.add(
+        PostureError(
+          code: leftIsHigher ? 'left_arm_higher' : 'right_arm_higher',
+          message: leftIsHigher
+              ? 'Your left hand appears higher than your right. Lower the left side slightly.'
+              : 'Your right hand appears higher than your left. Lower the right side slightly.',
+          severity: difference > 20
+              ? PostureErrorSeverity.severe
+              : PostureErrorSeverity.medium,
+          measuredValue: difference,
+          threshold:
+              YogaPostureTrackerThresholds.armHeightDifferenceGoodDegrees,
+        ),
+      );
+    }
+    return score;
+  }
+
+  bool _evaluateArmStability({
     required String side,
     required String ringId,
     required SensorWindow poseWindow,
     required List<PostureError> errors,
   }) {
-    final gyroSamples = poseWindow.ringGyroscopeSamplesFor(ringId);
-    if (gyroSamples.isEmpty) {
-      return;
-    }
-    final gyroStats = vectorStats(gyroSamples);
+    return _evaluateGyroStability(
+      code: '${side}_arm_unstable',
+      message: 'Your $side hand or arm is unstable during the hold.',
+      samples: poseWindow.ringGyroscopeSamplesFor(ringId),
+      threshold: YogaPostureTrackerThresholds.armGyroInstability,
+      errors: errors,
+    );
+  }
+
+  bool _evaluateGyroStability({
+    required String code,
+    required String message,
+    required List<ImuSample> samples,
+    required double threshold,
+    required List<PostureError> errors,
+  }) {
+    final gyroStats = vectorStats(samples);
     if (!gyroStats.hasData) {
-      return;
+      return false;
     }
-    if (gyroStats.meanMagnitude >
-        YogaPostureTrackerThresholds.armGyroInstability) {
+    if (gyroStats.meanMagnitude > threshold) {
       errors.add(
         PostureError(
-          code: '${side}_arm_unstable',
-          message: 'Your $side hand or arm is unstable during the hold.',
+          code: code,
+          message: message,
           severity: PostureErrorSeverity.minor,
           measuredValue: gyroStats.meanMagnitude,
-          threshold: YogaPostureTrackerThresholds.armGyroInstability,
+          threshold: threshold,
         ),
       );
+      return false;
     }
+    return true;
   }
+
+  List<double> _baselineMean({
+    required CalibrationData calibration,
+    required String key,
+    required List<ImuSample> fallbackSamples,
+  }) {
+    final startOrientation = calibration.startOrientations[key];
+    if (startOrientation != null) {
+      return startOrientation.meanVector;
+    }
+    return vectorStats(fallbackSamples).mean;
+  }
+
+  double _rangeScore({
+    required double value,
+    required double perfectMin,
+    required double perfectMax,
+    required double goodMin,
+    required double goodMax,
+    required double weight,
+  }) {
+    if (value >= perfectMin && value <= perfectMax) {
+      return weight;
+    }
+    if (value >= goodMin && value <= goodMax) {
+      return weight * 0.8;
+    }
+    return 0;
+  }
+
+  double _absoluteThresholdScore({
+    required double value,
+    required double perfectMax,
+    required double goodMax,
+    required double weight,
+  }) {
+    if (value <= perfectMax) {
+      return weight;
+    }
+    if (value <= goodMax) {
+      return weight * 0.8;
+    }
+    return 0;
+  }
+}
+
+class _ArmPoseMetrics {
+  final double elevationDegrees;
+  final double elevationScore;
+  final double palmRotationScore;
+  final bool isStable;
+
+  const _ArmPoseMetrics({
+    required this.elevationDegrees,
+    required this.elevationScore,
+    required this.palmRotationScore,
+    required this.isStable,
+  });
 }

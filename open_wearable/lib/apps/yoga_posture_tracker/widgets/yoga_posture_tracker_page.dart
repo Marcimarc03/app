@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:open_earable_flutter/open_earable_flutter.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/model/yoga_models.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/services/yoga_sensor_service.dart';
@@ -412,7 +411,7 @@ class _PoseInstructionScreen extends StatelessWidget {
           title: 'What is checked',
           icon: Icons.fact_check_rounded,
           child: const Text(
-            'The current MVP checks whether ring orientation changes enough from neutral, whether arm/head motion is stable, and whether the head remains near the calibrated neutral.',
+            'The current MVP checks arm elevation against the calibrated arm-down pose, left-right hand height, palm rotation, head pitch/roll, and pose stability.',
           ),
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
@@ -442,10 +441,11 @@ class _PoseImageCard extends StatelessWidget {
         aspectRatio: 1.35,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: SvgPicture.asset(
-            'lib/apps/yoga_posture_tracker/assets/warrior_ii_pose.svg',
+          child: Image.asset(
+            'lib/apps/yoga_posture_tracker/assets/warrior_ii_pose.png',
             fit: BoxFit.contain,
-            semanticsLabel: 'Warrior II pose',
+            filterQuality: FilterQuality.high,
+            semanticLabel: 'Warrior II pose',
           ),
         ),
       ),

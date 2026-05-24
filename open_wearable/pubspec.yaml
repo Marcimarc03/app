@@ -35,9 +35,13 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   open_file: ^3.3.2
-  open_earable_flutter: ^2.3.5
+  open_earable_flutter:
+    git:
+      url: https://github.com/OpenEarable/open_earable_flutter.git
+      ref: open-ring-fix
   universal_ble: ^0.21.1
   flutter_platform_widgets: ^10.0.1
+  flutter_tts: ^4.2.5
   provider: ^6.1.2
   logger: ^2.5.0
   community_charts_flutter: ^1.0.4

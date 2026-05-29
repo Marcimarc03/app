@@ -51,16 +51,49 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
       value: _controller,
       child: Consumer2<YogaSessionController, WearablesProvider>(
         builder: (context, controller, wearablesProvider, _) {
-          final devices = _sensorService.resolveDevices(wearablesProvider);
+          final devices = _devicesForStartScreen(
+            controller: controller,
+            wearablesProvider: wearablesProvider,
+          );
+          final canNavigateBack = controller.canNavigateBack;
           return PlatformScaffold(
             appBar: PlatformAppBar(
               title: PlatformText('Yoga Posture Tracker'),
+              leading: canNavigateBack
+                  ? PlatformIconButton(
+                      icon: const Icon(Icons.arrow_back_rounded),
+                      onPressed: () => unawaited(
+                        controller.navigateBack(wearablesProvider),
+                      ),
+                    )
+                  : null,
             ),
-            body: _buildBody(
-              context,
-              controller: controller,
-              wearablesProvider: wearablesProvider,
-              devices: devices,
+            body: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, animation) {
+                final offsetAnimation = Tween<Offset>(
+                  begin: const Offset(0.04, 0),
+                  end: Offset.zero,
+                ).animate(animation);
+                return FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: offsetAnimation,
+                    child: child,
+                  ),
+                );
+              },
+              child: KeyedSubtree(
+                key: ValueKey('${controller.phase.name}-${controller.pose.id}'),
+                child: _buildBody(
+                  context,
+                  controller: controller,
+                  wearablesProvider: wearablesProvider,
+                  devices: devices,
+                ),
+              ),
             ),
           );
         },
@@ -77,20 +110,32 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
     return switch (controller.phase) {
       YogaSessionPhase.idle || YogaSessionPhase.checkingDevices => _StartScreen(
           devices: devices,
+          assignment: devices.ringAssignment,
           isBusy: controller.isBusy,
-          onStart: () => unawaited(controller.startSession(wearablesProvider)),
-        ),
-      YogaSessionPhase.assigningRings => _RingAssignmentScreen(
-          devices: controller.devices,
-          assignment: controller.ringAssignment,
           onLeftChanged: (ringId) =>
               controller.updateRingAssignment(leftRingId: ringId),
           onRightChanged: (ringId) =>
               controller.updateRingAssignment(rightRingId: ringId),
-          onContinue: controller.confirmRingAssignment,
+          onStart: () => unawaited(
+            controller.startSession(
+              wearablesProvider,
+              ringAssignment: devices.ringAssignment,
+            ),
+          ),
+        ),
+      YogaSessionPhase.poseSelection => _PoseSelectionScreen(
+          poses: controller.availablePoses,
+          onPoseSelected: (pose) => _openPoseCalibrationRoute(
+            context,
+            controller: controller,
+            wearablesProvider: wearablesProvider,
+            pose: pose,
+          ),
         ),
       YogaSessionPhase.calibrationInstructions => _CalibrationInstructionScreen(
           devices: controller.devices,
+          pose: controller.pose,
+          poseHeroTag: _poseHeroTag(controller.pose),
           warning: controller.calibrationWarning,
           onBeginCalibration: () =>
               unawaited(controller.beginCalibration(wearablesProvider)),
@@ -106,6 +151,7 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
         ),
       YogaSessionPhase.poseInstructions => _PoseInstructionScreen(
           pose: controller.pose,
+          setupInstruction: controller.poseSetupInstruction,
           onBeginHold: () =>
               unawaited(controller.beginPoseHold(wearablesProvider)),
         ),
@@ -132,16 +178,109 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
         ),
     };
   }
+
+  YogaDeviceSet _devicesForStartScreen({
+    required YogaSessionController controller,
+    required WearablesProvider wearablesProvider,
+  }) {
+    final devices = _sensorService.resolveDevices(wearablesProvider);
+    final assignment = _ringAssignmentForStartScreen(
+      assignment: controller.ringAssignment,
+      devices: devices,
+    );
+    return devices.copyWith(ringAssignment: assignment);
+  }
+
+  RingAssignment _ringAssignmentForStartScreen({
+    required RingAssignment assignment,
+    required YogaDeviceSet devices,
+  }) {
+    final ringIds = devices.rings.map((ring) => ring.deviceId).toSet();
+    final leftRingId =
+        ringIds.contains(assignment.leftRingId) ? assignment.leftRingId : null;
+    final rightRingId = ringIds.contains(assignment.rightRingId)
+        ? assignment.rightRingId
+        : null;
+
+    if (leftRingId != null || rightRingId != null) {
+      return RingAssignment(
+        leftRingId: leftRingId,
+        rightRingId: rightRingId,
+      );
+    }
+
+    return _sensorService.defaultRingAssignment(devices);
+  }
+
+  Future<void> _openPoseCalibrationRoute(
+    BuildContext context, {
+    required YogaSessionController controller,
+    required WearablesProvider wearablesProvider,
+    required YogaPose pose,
+  }) async {
+    await Navigator.of(context).push<void>(
+      PageRouteBuilder<void>(
+        transitionDuration: const Duration(milliseconds: 360),
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (routeContext, animation, secondaryAnimation) {
+          return ChangeNotifierProvider.value(
+            value: controller,
+            child: Consumer<YogaSessionController>(
+              builder: (context, routeController, _) {
+                return PlatformScaffold(
+                  appBar: PlatformAppBar(
+                    title: PlatformText('Yoga Posture Tracker'),
+                    leading: PlatformIconButton(
+                      icon: const Icon(Icons.arrow_back_rounded),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ),
+                  body: _CalibrationInstructionScreen(
+                    devices: routeController.devices,
+                    pose: pose,
+                    poseHeroTag: _poseHeroTag(pose),
+                    warning: routeController.calibrationWarning,
+                    onBeginCalibration: () {
+                      routeController.selectPose(pose);
+                      Navigator.of(context).pop();
+                      unawaited(
+                        routeController.beginCalibration(wearablesProvider),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          );
+        },
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(
+            opacity: CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+            ),
+            child: child,
+          );
+        },
+      ),
+    );
+  }
 }
 
 class _StartScreen extends StatelessWidget {
   final YogaDeviceSet devices;
+  final RingAssignment assignment;
   final bool isBusy;
+  final ValueChanged<String?> onLeftChanged;
+  final ValueChanged<String?> onRightChanged;
   final VoidCallback onStart;
 
   const _StartScreen({
     required this.devices,
+    required this.assignment,
     required this.isBusy,
+    required this.onLeftChanged,
+    required this.onRightChanged,
     required this.onStart,
   });
 
@@ -153,26 +292,47 @@ class _StartScreen extends StatelessWidget {
         _HeroCard(
           title: 'Yoga Posture Tracker',
           subtitle:
-              'A first MVP for evaluating Warrior II with OpenEarable and ring IMU data.',
+              'Choose a pose, calibrate your neutral stance, and receive calm feedback from OpenEarable and ring IMU data.',
           icon: Icons.self_improvement_rounded,
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
         _DeviceStatusCard(devices: devices),
         const SizedBox(height: SensorPageSpacing.sectionGap),
-        _InfoCard(
-          title: 'MVP flow',
-          icon: Icons.route_rounded,
-          child: const Text(
-            'The session calibrates a neutral standing posture, then asks you to hold Warrior II for 30 seconds. A rule-based evaluator checks short windows during the hold and can generate live coaching feedback.',
+        if (devices.hasTwoRings) ...[
+          _InfoCard(
+            title: 'Ring assignment',
+            icon: Icons.compare_arrows_rounded,
+            child: Column(
+              children: [
+                _RingDropdown(
+                  label: 'Left hand',
+                  selectedRingId: assignment.leftRingId,
+                  rings: devices.rings,
+                  otherAssignedRingId: assignment.rightRingId,
+                  onChanged: onLeftChanged,
+                ),
+                const SizedBox(height: 10),
+                _RingDropdown(
+                  label: 'Right hand',
+                  selectedRingId: assignment.rightRingId,
+                  rings: devices.rings,
+                  otherAssignedRingId: assignment.leftRingId,
+                  onChanged: onRightChanged,
+                ),
+              ],
+            ),
           ),
-        ),
+        ],
         const SizedBox(height: SensorPageSpacing.sectionGap),
         SafeArea(
           top: false,
           child: SizedBox(
             width: double.infinity,
             child: PlatformElevatedButton(
-              onPressed: isBusy || !devices.hasEarable || !devices.hasTwoRings
+              onPressed: isBusy ||
+                      !devices.hasEarable ||
+                      !devices.hasTwoRings ||
+                      !assignment.isValid
                   ? null
                   : onStart,
               child: PlatformText(isBusy ? 'Preparing...' : 'Start session'),
@@ -184,19 +344,13 @@ class _StartScreen extends StatelessWidget {
   }
 }
 
-class _RingAssignmentScreen extends StatelessWidget {
-  final YogaDeviceSet devices;
-  final RingAssignment assignment;
-  final ValueChanged<String?> onLeftChanged;
-  final ValueChanged<String?> onRightChanged;
-  final VoidCallback onContinue;
+class _PoseSelectionScreen extends StatelessWidget {
+  final List<YogaPose> poses;
+  final ValueChanged<YogaPose> onPoseSelected;
 
-  const _RingAssignmentScreen({
-    required this.devices,
-    required this.assignment,
-    required this.onLeftChanged,
-    required this.onRightChanged,
-    required this.onContinue,
+  const _PoseSelectionScreen({
+    required this.poses,
+    required this.onPoseSelected,
   });
 
   @override
@@ -205,47 +359,119 @@ class _RingAssignmentScreen extends StatelessWidget {
       padding: SensorPageSpacing.pagePaddingWithBottomInset(context),
       children: [
         _HeroCard(
-          title: 'Assign rings',
+          title: 'Choose your pose',
           subtitle:
-              'Wear the ring labeled L on your left hand and the ring labeled R on your right hand. Then assign both rings below.',
-          icon: Icons.back_hand_rounded,
+              'Choose one of four poses. The app checks head posture, arm and hand position, and stability using calibrated IMU data.',
+          icon: Icons.spa_rounded,
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
-        _InfoCard(
-          title: 'Ring assignment',
-          icon: Icons.compare_arrows_rounded,
-          child: Column(
-            children: [
-              _RingDropdown(
-                label: 'Left hand',
-                selectedRingId: assignment.leftRingId,
-                rings: devices.rings,
-                blockedRingId: assignment.rightRingId,
-                onChanged: onLeftChanged,
-              ),
-              const SizedBox(height: 10),
-              _RingDropdown(
-                label: 'Right hand',
-                selectedRingId: assignment.rightRingId,
-                rings: devices.rings,
-                blockedRingId: assignment.leftRingId,
-                onChanged: onRightChanged,
-              ),
-            ],
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: poses.length,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+            childAspectRatio: 0.78,
           ),
-        ),
-        const SizedBox(height: SensorPageSpacing.sectionGap),
-        SafeArea(
-          top: false,
-          child: SizedBox(
-            width: double.infinity,
-            child: PlatformElevatedButton(
-              onPressed: assignment.isValid ? onContinue : null,
-              child: PlatformText('Continue to calibration'),
-            ),
-          ),
+          itemBuilder: (context, index) {
+            final pose = poses[index];
+            return _PoseGridCard(
+              pose: pose,
+              onTap: () => onPoseSelected(pose),
+            );
+          },
         ),
       ],
+    );
+  }
+}
+
+class _PoseGridCard extends StatelessWidget {
+  final YogaPose pose;
+  final VoidCallback onTap;
+
+  const _PoseGridCard({
+    required this.pose,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                child: Hero(
+                  tag: _poseHeroTag(pose),
+                  child: _PoseImage(
+                    pose: pose,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 9, 10, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    pose.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 6),
+                  _PoseAvailabilityPill(isReady: pose.isEvaluationAvailable),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PoseAvailabilityPill extends StatelessWidget {
+  final bool isReady;
+
+  const _PoseAvailabilityPill({
+    required this.isReady,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final backgroundColor =
+        isReady ? const Color(0xFFE3F3E5) : colors.surfaceContainerHighest;
+    final foregroundColor =
+        isReady ? const Color(0xFF2E7D32) : colors.onSurfaceVariant;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        child: Text(
+          isReady ? 'Ready' : 'Next',
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: foregroundColor,
+                fontWeight: FontWeight.w800,
+              ),
+        ),
+      ),
     );
   }
 }
@@ -254,14 +480,14 @@ class _RingDropdown extends StatelessWidget {
   final String label;
   final String? selectedRingId;
   final List<Wearable> rings;
-  final String? blockedRingId;
+  final String? otherAssignedRingId;
   final ValueChanged<String?> onChanged;
 
   const _RingDropdown({
     required this.label,
     required this.selectedRingId,
     required this.rings,
-    required this.blockedRingId,
+    required this.otherAssignedRingId,
     required this.onChanged,
   });
 
@@ -279,10 +505,9 @@ class _RingDropdown extends StatelessWidget {
         for (final ring in rings)
           DropdownMenuItem<String>(
             value: ring.deviceId,
-            enabled: ring.deviceId != blockedRingId,
             child: Text(
-              ring.deviceId == blockedRingId
-                  ? '${formatWearableDisplayName(ring.name)} (already assigned)'
+              ring.deviceId == otherAssignedRingId
+                  ? '${formatWearableDisplayName(ring.name)} (swap)'
                   : formatWearableDisplayName(ring.name),
             ),
           ),
@@ -294,11 +519,15 @@ class _RingDropdown extends StatelessWidget {
 
 class _CalibrationInstructionScreen extends StatelessWidget {
   final YogaDeviceSet devices;
+  final YogaPose pose;
+  final String poseHeroTag;
   final String? warning;
   final VoidCallback onBeginCalibration;
 
   const _CalibrationInstructionScreen({
     required this.devices,
+    required this.pose,
+    required this.poseHeroTag,
     required this.warning,
     required this.onBeginCalibration,
   });
@@ -309,10 +538,20 @@ class _CalibrationInstructionScreen extends StatelessWidget {
       padding: SensorPageSpacing.pagePaddingWithBottomInset(context),
       children: [
         _HeroCard(
-          title: 'Calibration',
+          title: 'Calibrate for ${pose.name}',
           subtitle:
               'Stand upright, keep your head straight, place your arms next to your body with palms facing inward.',
           icon: Icons.accessibility_new_rounded,
+        ),
+        const SizedBox(height: SensorPageSpacing.sectionGap),
+        _SelectedPosePreviewCard(
+          pose: pose,
+          heroTag: poseHeroTag,
+        ),
+        const SizedBox(height: SensorPageSpacing.sectionGap),
+        const _ReferenceImageCard(
+          assetPath: yogaCalibrationPoseAsset,
+          semanticLabel: yogaCalibrationPoseSemanticLabel,
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
         if (warning != null) ...[
@@ -325,7 +564,7 @@ class _CalibrationInstructionScreen extends StatelessWidget {
           title: 'Why calibration matters',
           icon: Icons.tune_rounded,
           child: const Text(
-            'The MVP stores this neutral sensor window as the reference. Warrior II is then evaluated as movement away from this baseline.',
+            'The app stores this neutral sensor window as the reference. Each pose is then evaluated as movement away from this baseline.',
           ),
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
@@ -342,6 +581,107 @@ class _CalibrationInstructionScreen extends StatelessWidget {
       ],
     );
   }
+}
+
+class _SelectedPosePreviewCard extends StatelessWidget {
+  final YogaPose pose;
+  final String heroTag;
+
+  const _SelectedPosePreviewCard({
+    required this.pose,
+    required this.heroTag,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 104,
+              child: AspectRatio(
+                aspectRatio: 1,
+                child: Hero(
+                  tag: heroTag,
+                  child: _PoseImage(pose: pose),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    pose.name,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Selected pose',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PoseImage extends StatelessWidget {
+  final YogaPose pose;
+  final BoxFit fit;
+
+  const _PoseImage({
+    required this.pose,
+    this.fit = BoxFit.contain,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      type: MaterialType.transparency,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.asset(
+          pose.imageAsset,
+          fit: fit,
+          filterQuality: FilterQuality.high,
+          semanticLabel: pose.name,
+        ),
+      ),
+    );
+  }
+}
+
+String _poseHeroTag(YogaPose pose) {
+  return 'yoga-posture-tracker-pose-${pose.id}';
+}
+
+String _measurableChecksForPose(YogaPose pose) {
+  return switch (pose.id) {
+    'warrior_ii' =>
+      'The app checks arm elevation, left-right hand height, palm rotation, head pitch/roll, and stability. Head turn, legs, and shoulders cannot be measured directly with the current sensors.',
+    'triangle' =>
+      'The app checks whether one arm reaches upward, the other reaches downward, head control, and stability. Trunk angle, leg stance, and gaze direction cannot be measured directly.',
+    'chair' =>
+      'The app checks whether both arms lift overhead, left-right symmetry, head posture, and stability. Knees, hips, and squat depth cannot be measured directly.',
+    'cobra' =>
+      'The app checks head lift as an accelerometer-based proxy, head centering, hand symmetry, and stability. Chest lift, shoulders, elbows, and backbend depth cannot be measured directly.',
+    _ =>
+      'The app checks the measurable parts of this pose: head posture, hand and arm orientation, left-right symmetry, and stability. Some full-body details such as knees, hips, and trunk alignment cannot be measured directly with the current sensors.',
+  };
 }
 
 class _CalibrationWarningCard extends StatelessWidget {
@@ -387,10 +727,12 @@ class _CalibrationWarningCard extends StatelessWidget {
 
 class _PoseInstructionScreen extends StatelessWidget {
   final YogaPose pose;
+  final String setupInstruction;
   final VoidCallback onBeginHold;
 
   const _PoseInstructionScreen({
     required this.pose,
+    required this.setupInstruction,
     required this.onBeginHold,
   });
 
@@ -401,18 +743,19 @@ class _PoseInstructionScreen extends StatelessWidget {
       children: [
         _HeroCard(
           title: pose.name,
-          subtitle: pose.instruction,
+          subtitle: setupInstruction,
           icon: Icons.sports_gymnastics_rounded,
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
-        const _PoseImageCard(),
+        _ReferenceImageCard(
+          assetPath: pose.imageAsset,
+          semanticLabel: pose.name,
+        ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
         _InfoCard(
           title: 'What is checked',
           icon: Icons.fact_check_rounded,
-          child: const Text(
-            'The current MVP checks arm elevation against the calibrated arm-down pose, left-right hand height, palm rotation, head pitch/roll, and pose stability.',
-          ),
+          child: Text(_measurableChecksForPose(pose)),
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
         SafeArea(
@@ -430,8 +773,14 @@ class _PoseInstructionScreen extends StatelessWidget {
   }
 }
 
-class _PoseImageCard extends StatelessWidget {
-  const _PoseImageCard();
+class _ReferenceImageCard extends StatelessWidget {
+  final String assetPath;
+  final String semanticLabel;
+
+  const _ReferenceImageCard({
+    required this.assetPath,
+    required this.semanticLabel,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -442,10 +791,10 @@ class _PoseImageCard extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Image.asset(
-            'lib/apps/yoga_posture_tracker/assets/warrior_ii_pose.png',
+            assetPath,
             fit: BoxFit.contain,
             filterQuality: FilterQuality.high,
-            semanticLabel: 'Warrior II pose',
+            semanticLabel: semanticLabel,
           ),
         ),
       ),
@@ -619,62 +968,79 @@ class _SignalQualityCard extends StatelessWidget {
     final statusColor =
         signalQuality.hasIssues ? colors.error : const Color(0xFF2E7D32);
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  signalQuality.hasIssues
-                      ? Icons.signal_cellular_connected_no_internet_4_bar
-                      : Icons.sensors_rounded,
-                  color: statusColor,
-                  size: 18,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  signalQuality.hasIssues
-                      ? 'Sensor data needs attention'
-                      : 'Sensor data live',
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: statusColor,
-                        fontWeight: FontWeight.w800,
-                      ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            for (final stream in signalQuality.streams)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Row(
-                  children: [
-                    Icon(
-                      stream.isOk
-                          ? Icons.check_circle_rounded
-                          : Icons.error_outline_rounded,
-                      size: 16,
-                      color:
-                          stream.isOk ? const Color(0xFF2E7D32) : colors.error,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(stream.label)),
-                    Text(
-                      '${stream.sampleCount} samples',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
+    return _ExpandableInfoCard(
+      title: signalQuality.hasIssues
+          ? 'Sensor data needs attention'
+          : 'Sensor data live',
+      subtitle: '${signalQuality.totalSampleCount} samples',
+      icon: signalQuality.hasIssues
+          ? Icons.signal_cellular_connected_no_internet_4_bar
+          : Icons.sensors_rounded,
+      iconColor: statusColor,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final stream in signalQuality.streams)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Icon(
+                    stream.isOk
+                        ? Icons.check_circle_rounded
+                        : Icons.error_outline_rounded,
+                    size: 16,
+                    color: stream.isOk ? const Color(0xFF2E7D32) : colors.error,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(stream.label)),
+                  Text(
+                    '${stream.sampleCount} samples',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
               ),
-          ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExpandableInfoCard extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final IconData icon;
+  final Color? iconColor;
+  final Widget child;
+
+  const _ExpandableInfoCard({
+    required this.title,
+    required this.icon,
+    required this.child,
+    this.subtitle,
+    this.iconColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        leading: Icon(
+          icon,
+          color: iconColor ?? Theme.of(context).colorScheme.primary,
         ),
+        title: Text(
+          title,
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+        ),
+        subtitle: subtitle == null ? null : Text(subtitle!),
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        children: [child],
       ),
     );
   }
@@ -819,21 +1185,10 @@ class _IssueGroupCard extends StatelessWidget {
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.priority_high_rounded),
                     title: Text(error.message),
-                    subtitle: Text(
-                      _formatErrorDetail(error),
-                    ),
                   ),
               ],
             ),
     );
-  }
-
-  String _formatErrorDetail(PostureError error) {
-    final windowCount = error.evaluatedWindowCount;
-    final occurrence = windowCount == null
-        ? ''
-        : 'Detected in ${error.occurrenceCount}/$windowCount windows. ';
-    return '${occurrence}Measured ${error.measuredValue.toStringAsFixed(1)} / threshold ${error.threshold.toStringAsFixed(1)}';
   }
 }
 
@@ -846,12 +1201,15 @@ class _DeviceStatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final statusColor = devices.hasEarable && devices.hasTwoRings
+    final hasRequiredDevices = devices.hasEarable && devices.hasTwoRings;
+    final statusColor = hasRequiredDevices
         ? const Color(0xFF2E7D32)
         : Theme.of(context).colorScheme.error;
-    return _InfoCard(
+    return _ExpandableInfoCard(
       title: 'Connected devices',
+      subtitle: hasRequiredDevices ? 'Setup detected' : 'Setup incomplete',
       icon: Icons.sensors_rounded,
+      iconColor: statusColor,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -873,7 +1231,7 @@ class _DeviceStatusCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            devices.hasEarable && devices.hasTwoRings
+            hasRequiredDevices
                 ? 'Required setup detected. Assign the left and right rings before calibration.'
                 : 'Please connect one OpenEarable and two rings to start the Yoga Posture Tracker.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(

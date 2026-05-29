@@ -75,11 +75,55 @@ void main() {
     );
 
     test('scores a stable Warrior II window without errors', () {
-      final result = evaluator.evaluateWarriorTwo(
+      final result = evaluator.evaluatePose(
+        pose: warriorTwoPose,
         calibration: calibration,
         poseWindow: _poseWindow(
           leftArmVector: _warriorTwoArmVector,
           rightArmVector: _warriorTwoArmVector,
+        ),
+      );
+
+      expect(result.score, 100);
+      expect(result.errors, isEmpty);
+    });
+
+    test('scores a stable Chair window without errors', () {
+      final result = evaluator.evaluatePose(
+        pose: chairPose,
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          leftArmVector: _overheadArmVector,
+          rightArmVector: _overheadArmVector,
+        ),
+      );
+
+      expect(result.score, 100);
+      expect(result.errors, isEmpty);
+    });
+
+    test('scores a stable Triangle window without errors', () {
+      final result = evaluator.evaluatePose(
+        pose: trianglePose,
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          leftArmVector: _overheadArmVector,
+          rightArmVector: _armDownVector,
+        ),
+      );
+
+      expect(result.score, 100);
+      expect(result.errors, isEmpty);
+    });
+
+    test('scores a stable Cobra window without errors', () {
+      final result = evaluator.evaluatePose(
+        pose: cobraPose,
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          headVector: _cobraHeadLiftVector,
+          leftArmVector: _armDownVector,
+          rightArmVector: _armDownVector,
         ),
       );
 
@@ -162,6 +206,49 @@ void main() {
       );
     });
 
+    test('adds pose-specific stability errors for unstable gyro data', () {
+      final result = evaluator.evaluatePose(
+        pose: chairPose,
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          leftArmVector: _overheadArmVector,
+          rightArmVector: _overheadArmVector,
+          leftGyroVector: [160, 0, 0],
+        ),
+      );
+
+      expect(
+        result.errors.map((error) => error.code),
+        contains('chair_unstable'),
+      );
+    });
+
+    test('handles missing ring data for non-Warrior poses without crashing',
+        () {
+      const emptyWindow = SensorWindow(
+        earableAccelerometerSamples: [],
+        earableGyroscopeSamples: [],
+        ringAccelerometerSamplesByDeviceId: {},
+        ringGyroscopeSamplesByDeviceId: {},
+      );
+
+      final result = evaluator.evaluatePose(
+        pose: trianglePose,
+        calibration: calibration,
+        poseWindow: emptyWindow,
+      );
+
+      expect(result.score, 0);
+      expect(
+        result.errors.map((error) => error.code),
+        containsAll([
+          'triangle_left_ring_data_missing',
+          'triangle_right_ring_data_missing',
+          'no_sensor_data',
+        ]),
+      );
+    });
+
     test('aggregates scores and error occurrence counts across windows', () {
       const headTilt = PostureError(
         code: 'head_tilted',
@@ -234,28 +321,35 @@ void main() {
 }
 
 const List<double> _warriorTwoArmVector = [0.0, 1.0, 0.0];
+const List<double> _overheadArmVector = [0.0, 0.0, -1.0];
+const List<double> _armDownVector = [0.0, 0.0, 1.0];
+const List<double> _cobraHeadLiftVector = [-0.5, 0.0, 0.8660254038];
 
 SensorWindow _poseWindow({
+  List<double> headVector = _armDownVector,
   required List<double> leftArmVector,
   required List<double> rightArmVector,
+  List<double> headGyroVector = const [0, 0, 0],
+  List<double> leftGyroVector = const [0, 0, 0],
+  List<double> rightGyroVector = const [0, 0, 0],
 }) {
   return SensorWindow(
-    earableAccelerometerSamples: const [
+    earableAccelerometerSamples: [
       ImuSample(
         deviceId: 'earable',
         deviceName: 'OpenEarable',
         sensorName: 'accelerometer',
         timestamp: 2,
-        values: [0, 0, 1],
+        values: headVector,
       ),
     ],
-    earableGyroscopeSamples: const [
+    earableGyroscopeSamples: [
       ImuSample(
         deviceId: 'earable',
         deviceName: 'OpenEarable',
         sensorName: 'gyroscope',
         timestamp: 2,
-        values: [0, 0, 0],
+        values: headGyroVector,
       ),
     ],
     ringAccelerometerSamplesByDeviceId: {
@@ -278,14 +372,14 @@ SensorWindow _poseWindow({
         ),
       ],
     },
-    ringGyroscopeSamplesByDeviceId: const {
+    ringGyroscopeSamplesByDeviceId: {
       'left-ring': [
         ImuSample(
           deviceId: 'left-ring',
           deviceName: 'OpenRing L',
           sensorName: 'gyroscope',
           timestamp: 2,
-          values: [0, 0, 0],
+          values: leftGyroVector,
         ),
       ],
       'right-ring': [
@@ -294,7 +388,7 @@ SensorWindow _poseWindow({
           deviceName: 'OpenRing R',
           sensorName: 'gyroscope',
           timestamp: 2,
-          values: [0, 0, 0],
+          values: rightGyroVector,
         ),
       ],
     },

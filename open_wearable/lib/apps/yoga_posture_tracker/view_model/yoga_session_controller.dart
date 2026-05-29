@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/model/yoga_models.dart';
+import 'package:open_wearable/apps/yoga_posture_tracker/services/calibration_countdown_sound_service.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/services/llm_feedback_service.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/services/rule_based_pose_evaluator.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/services/tts_feedback_service.dart';
@@ -12,21 +13,25 @@ import 'package:open_wearable/view_models/wearables_provider.dart';
 class YogaSessionController with ChangeNotifier {
   static const Duration calibrationDuration = Duration(seconds: 3);
   static const Duration holdDuration = Duration(seconds: 30);
+  static const Duration firstCoachingWindowDuration = Duration(seconds: 7);
   static const Duration coachingWindowDuration = Duration(seconds: 5);
 
   final YogaSensorService _sensorService;
   final RuleBasedPoseEvaluator _poseEvaluator;
   final LlmFeedbackService _llmFeedbackService;
   final TtsFeedbackService _ttsFeedbackService;
+  final CalibrationCountdownSoundService _countdownSoundService;
 
   YogaSessionPhase _phase = YogaSessionPhase.idle;
   YogaDeviceSet _devices = const YogaDeviceSet(earable: null, rings: []);
   CalibrationData? _calibrationData;
   PoseEvaluationResult? _evaluationResult;
   YogaFeedback? _feedback;
+  YogaFeedback? _poseSetupFeedback;
   SensorWindowQuality? _latestSignalQuality;
   String? _calibrationWarning;
   RingAssignment _ringAssignment = const RingAssignment();
+  YogaPose _selectedPose = warriorTwoPose;
   int _remainingSeconds = 0;
   int _operationGeneration = 0;
   bool _isDisposed = false;
@@ -38,11 +43,14 @@ class YogaSessionController with ChangeNotifier {
     RuleBasedPoseEvaluator? poseEvaluator,
     LlmFeedbackService? llmFeedbackService,
     TtsFeedbackService? ttsFeedbackService,
+    CalibrationCountdownSoundService? countdownSoundService,
   })  : _sensorService = sensorService ?? YogaSensorService(),
         _poseEvaluator = poseEvaluator ?? const RuleBasedPoseEvaluator(),
         _llmFeedbackService = llmFeedbackService ?? GeminiLlmFeedbackService(),
         _ttsFeedbackService = ttsFeedbackService ??
-            YogaTtsFeedbackServiceFactory.fromEnvironment() {
+            YogaTtsFeedbackServiceFactory.fromEnvironment(),
+        _countdownSoundService =
+            countdownSoundService ?? GeneratedBeepCountdownSoundService() {
     _cancelCompleter = Completer<void>();
   }
 
@@ -50,11 +58,16 @@ class YogaSessionController with ChangeNotifier {
   YogaDeviceSet get devices => _devices;
   PoseEvaluationResult? get evaluationResult => _evaluationResult;
   YogaFeedback? get feedback => _feedback;
+  YogaFeedback? get poseSetupFeedback => _poseSetupFeedback;
   SensorWindowQuality? get latestSignalQuality => _latestSignalQuality;
   String? get calibrationWarning => _calibrationWarning;
   RingAssignment get ringAssignment => _ringAssignment;
   int get remainingSeconds => _remainingSeconds;
-  YogaPose get pose => warriorTwoPose;
+  YogaPose get pose => _selectedPose;
+  List<YogaPose> get availablePoses => yogaPostureTrackerPoses;
+  String get poseSetupInstruction {
+    return _poseSetupFeedback?.recommendation ?? pose.instruction;
+  }
 
   bool get isBusy {
     return switch (_phase) {
@@ -67,62 +80,98 @@ class YogaSessionController with ChangeNotifier {
     };
   }
 
+  bool get canNavigateBack {
+    return switch (_phase) {
+      YogaSessionPhase.idle => false,
+      _ => true,
+    };
+  }
+
   void refreshDevices(WearablesProvider wearablesProvider) {
     _devices = _sensorService.resolveDevices(wearablesProvider);
     _notifyListeners();
   }
 
-  Future<void> startSession(WearablesProvider wearablesProvider) async {
+  Future<void> startSession(
+    WearablesProvider wearablesProvider, {
+    RingAssignment? ringAssignment,
+  }) async {
     _startNewOperation();
     await _stopFeedbackPlayback();
     logger.i('Yoga session start');
     _evaluationResult = null;
     _feedback = null;
+    _poseSetupFeedback = null;
     _latestSignalQuality = null;
     _calibrationWarning = null;
     _setPhase(YogaSessionPhase.checkingDevices);
     _devices = _sensorService.resolveDevices(wearablesProvider);
-    _ringAssignment = _sensorService.defaultRingAssignment(_devices);
+    _ringAssignment = _ringAssignmentForDevices(
+      ringAssignment ?? _ringAssignment,
+      devices: _devices,
+    );
+    if (!_ringAssignment.isValid) {
+      _ringAssignment = _sensorService.defaultRingAssignment(_devices);
+    }
     _devices = _devices.copyWith(ringAssignment: _ringAssignment);
     logger.i(
       'Yoga devices: earable=${_devices.earable?.name ?? 'none'}, '
       'rings=${_devices.rings.map((ring) => ring.name).join(', ')}',
     );
-    if (!_devices.hasEarable || !_devices.hasTwoRings) {
+    if (!_devices.hasEarable ||
+        !_devices.hasTwoRings ||
+        !_ringAssignment.isValid) {
       _setPhase(YogaSessionPhase.idle);
       return;
     }
-    _setPhase(YogaSessionPhase.assigningRings);
+    _setPhase(YogaSessionPhase.poseSelection);
+  }
+
+  void selectPose(YogaPose pose) {
+    _selectedPose = pose;
+    _calibrationData = null;
+    _evaluationResult = null;
+    _feedback = null;
+    _poseSetupFeedback = null;
+    _latestSignalQuality = null;
+    _calibrationWarning = null;
+    _remainingSeconds = 0;
+    _setPhase(YogaSessionPhase.calibrationInstructions);
   }
 
   void updateRingAssignment({
     String? leftRingId,
     String? rightRingId,
   }) {
-    _ringAssignment = _ringAssignment.copyWith(
-      leftRingId: leftRingId,
-      rightRingId: rightRingId,
-    );
+    var assignment = _ringAssignment;
+    if (leftRingId != null) {
+      assignment = assignment.assignLeftRing(leftRingId);
+    }
+    if (rightRingId != null) {
+      assignment = assignment.assignRightRing(rightRingId);
+    }
+    _ringAssignment = assignment;
     _devices = _devices.copyWith(ringAssignment: _ringAssignment);
     _notifyListeners();
-  }
-
-  void confirmRingAssignment() {
-    if (!_devices.hasTwoRings || !_ringAssignment.isValid) {
-      return;
-    }
-    _devices = _devices.copyWith(ringAssignment: _ringAssignment);
-    _setPhase(YogaSessionPhase.calibrationInstructions);
   }
 
   Future<void> beginCalibration(WearablesProvider wearablesProvider) async {
     if (!_devices.hasEarable ||
         !_devices.hasTwoRings ||
         !_ringAssignment.isValid) {
-      _setPhase(YogaSessionPhase.assigningRings);
+      _setPhase(YogaSessionPhase.idle);
+      return;
+    }
+    if (!pose.isEvaluationAvailable) {
+      _setPhase(YogaSessionPhase.calibrationInstructions);
       return;
     }
     final generation = _operationGeneration;
+    await _stopFeedbackPlayback();
+    await _stopCalibrationCountdownSound();
+    if (!_isOperationActive(generation)) {
+      return;
+    }
     _setPhase(YogaSessionPhase.calibrating);
     logger.i('Yoga calibration start');
     final collectionFuture = _sensorService.collectWindow(
@@ -134,6 +183,7 @@ class YogaSessionController with ChangeNotifier {
     final completed = await _countDown(
       calibrationDuration,
       generation: generation,
+      playCalibrationSounds: true,
     );
     final baselineWindow = await collectionFuture;
     if (!completed || !_isOperationActive(generation)) {
@@ -170,16 +220,28 @@ class YogaSessionController with ChangeNotifier {
   }
 
   Future<void> beginPoseHold(WearablesProvider wearablesProvider) async {
+    if (!pose.isEvaluationAvailable) {
+      _setPhase(YogaSessionPhase.calibrationInstructions);
+      return;
+    }
+
     final calibrationData = _calibrationData;
     if (calibrationData == null) {
       _setPhase(YogaSessionPhase.calibrationInstructions);
       return;
     }
+    await _stopCalibrationCountdownSound();
 
     final generation = _operationGeneration;
     _setPhase(YogaSessionPhase.holdingPose);
     _remainingSeconds = holdDuration.inSeconds;
     _notifyListeners();
+    unawaited(
+      _generateAndSpeakPoseSetupInstruction(
+        generation,
+        requiredPhase: YogaSessionPhase.holdingPose,
+      ),
+    );
 
     final poseStream = _sensorService.startContinuousImuStreaming(
       devices: _devices,
@@ -192,9 +254,12 @@ class YogaSessionController with ChangeNotifier {
       while (secondsCollected < holdDuration.inSeconds &&
           _isOperationActive(generation)) {
         final remaining = holdDuration.inSeconds - secondsCollected;
-        final windowSeconds = remaining < coachingWindowDuration.inSeconds
+        final coachingDuration = secondsCollected == 0
+            ? firstCoachingWindowDuration
+            : coachingWindowDuration;
+        final windowSeconds = remaining < coachingDuration.inSeconds
             ? remaining
-            : coachingWindowDuration.inSeconds;
+            : coachingDuration.inSeconds;
         final windowDuration = Duration(seconds: windowSeconds);
 
         final completed = await _countDownSegment(
@@ -212,7 +277,8 @@ class YogaSessionController with ChangeNotifier {
           duration: windowDuration,
         );
 
-        final result = _poseEvaluator.evaluateWarriorTwo(
+        final result = _poseEvaluator.evaluatePose(
+          pose: pose,
           calibration: calibrationData,
           poseWindow: poseWindow,
         );
@@ -294,11 +360,40 @@ class YogaSessionController with ChangeNotifier {
     }
   }
 
+  Future<void> _generateAndSpeakPoseSetupInstruction(
+    int generation, {
+    required YogaSessionPhase requiredPhase,
+  }) async {
+    try {
+      final generatedInstruction =
+          await _llmFeedbackService.generatePoseSetupInstruction(
+        poseName: pose.name,
+      );
+      if (!_isOperationActive(generation) || _phase != requiredPhase) {
+        return;
+      }
+      _poseSetupFeedback = generatedInstruction;
+      logger.i(
+        'Yoga pose setup instruction generated: '
+        '${generatedInstruction.recommendation}',
+      );
+      _notifyListeners();
+      await _ttsFeedbackService.speak(generatedInstruction.recommendation);
+    } catch (error, stackTrace) {
+      logger.w(
+        'Yoga pose setup instruction generation failed.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
   Future<void> restartSession(WearablesProvider wearablesProvider) async {
     await _stopFeedbackPlayback();
     _calibrationData = null;
     _evaluationResult = null;
     _feedback = null;
+    _poseSetupFeedback = null;
     _latestSignalQuality = null;
     _calibrationWarning = null;
     _ringAssignment = const RingAssignment();
@@ -309,6 +404,7 @@ class YogaSessionController with ChangeNotifier {
     final devices = _devices;
     _requestStop();
     await _stopFeedbackPlayback();
+    await _stopCalibrationCountdownSound();
     await _sensorService.turnOffYogaSensors(
       devices: devices,
       wearablesProvider: wearablesProvider,
@@ -318,10 +414,80 @@ class YogaSessionController with ChangeNotifier {
     _setPhase(YogaSessionPhase.idle);
   }
 
+  Future<void> navigateBack(WearablesProvider wearablesProvider) async {
+    if (!canNavigateBack) {
+      return;
+    }
+
+    switch (_phase) {
+      case YogaSessionPhase.checkingDevices:
+        _startNewOperation();
+        await _stopFeedbackPlayback();
+        _setPhase(YogaSessionPhase.idle);
+        return;
+      case YogaSessionPhase.poseSelection:
+        _calibrationData = null;
+        _evaluationResult = null;
+        _feedback = null;
+        _poseSetupFeedback = null;
+        _latestSignalQuality = null;
+        _calibrationWarning = null;
+        _remainingSeconds = 0;
+        _setPhase(YogaSessionPhase.idle);
+        return;
+      case YogaSessionPhase.calibrationInstructions:
+        _calibrationData = null;
+        _poseSetupFeedback = null;
+        _calibrationWarning = null;
+        _remainingSeconds = 0;
+        _setPhase(YogaSessionPhase.poseSelection);
+        return;
+      case YogaSessionPhase.calibrating:
+        _startNewOperation();
+        _calibrationData = null;
+        _poseSetupFeedback = null;
+        _remainingSeconds = 0;
+        await _stopFeedbackPlayback();
+        await _stopCalibrationCountdownSound();
+        _setPhase(YogaSessionPhase.calibrationInstructions);
+        return;
+      case YogaSessionPhase.poseInstructions:
+        _calibrationData = null;
+        _poseSetupFeedback = null;
+        _remainingSeconds = 0;
+        await _stopFeedbackPlayback();
+        _setPhase(YogaSessionPhase.calibrationInstructions);
+        return;
+      case YogaSessionPhase.holdingPose:
+      case YogaSessionPhase.evaluating:
+      case YogaSessionPhase.feedback:
+        _startNewOperation();
+        await _stopFeedbackPlayback();
+        await _sensorService.turnOffYogaSensors(
+          devices: _devices,
+          wearablesProvider: wearablesProvider,
+        );
+        _remainingSeconds = 0;
+        _setPhase(YogaSessionPhase.poseInstructions);
+        return;
+      case YogaSessionPhase.result:
+        _feedback = null;
+        _evaluationResult = null;
+        _latestSignalQuality = null;
+        _remainingSeconds = 0;
+        await _stopFeedbackPlayback();
+        _setPhase(YogaSessionPhase.poseSelection);
+        return;
+      case YogaSessionPhase.idle:
+        return;
+    }
+  }
+
   Future<void> shutdown(WearablesProvider wearablesProvider) async {
     final devices = _devices;
     _requestStop();
     await _stopFeedbackPlayback();
+    await _stopCalibrationCountdownSound();
     await _sensorService.turnOffYogaSensors(
       devices: devices,
       wearablesProvider: wearablesProvider,
@@ -339,18 +505,38 @@ class YogaSessionController with ChangeNotifier {
   Future<bool> _countDown(
     Duration duration, {
     required int generation,
+    bool playCalibrationSounds = false,
   }) async {
     _remainingSeconds = duration.inSeconds;
     _notifyListeners();
     for (var second = duration.inSeconds; second > 0; second--) {
-      await Future<void>.delayed(const Duration(seconds: 1));
+      final tickStartedAt = DateTime.now();
+      if (playCalibrationSounds) {
+        await _playCalibrationCountdownTick(generation);
+      }
+      final tickElapsed = DateTime.now().difference(tickStartedAt);
+      final remainingTickDelay = const Duration(seconds: 1) - tickElapsed;
+      if (remainingTickDelay > Duration.zero) {
+        await Future<void>.delayed(remainingTickDelay);
+      }
       if (!_isOperationActive(generation)) {
         return false;
       }
       _remainingSeconds = second - 1;
       _notifyListeners();
     }
+    if (playCalibrationSounds && _isOperationActive(generation)) {
+      await _countdownSoundService.playCalibrationComplete();
+    }
     return true;
+  }
+
+  Future<void> _playCalibrationCountdownTick(int generation) async {
+    if (!_isOperationActive(generation) ||
+        _phase != YogaSessionPhase.calibrating) {
+      return;
+    }
+    await _countdownSoundService.playCountdownTick();
   }
 
   Future<bool> _countDownSegment(
@@ -377,6 +563,18 @@ class YogaSessionController with ChangeNotifier {
     } catch (error, stackTrace) {
       logger.w(
         'Yoga TTS feedback stop failed.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  Future<void> _stopCalibrationCountdownSound() async {
+    try {
+      await _countdownSoundService.stop();
+    } catch (error, stackTrace) {
+      logger.w(
+        'Yoga calibration countdown sound stop failed.',
         error: error,
         stackTrace: stackTrace,
       );
@@ -413,6 +611,21 @@ class YogaSessionController with ChangeNotifier {
         generation == _operationGeneration;
   }
 
+  RingAssignment _ringAssignmentForDevices(
+    RingAssignment assignment, {
+    required YogaDeviceSet devices,
+  }) {
+    final ringIds = devices.rings.map((ring) => ring.deviceId).toSet();
+    return RingAssignment(
+      leftRingId: ringIds.contains(assignment.leftRingId)
+          ? assignment.leftRingId
+          : null,
+      rightRingId: ringIds.contains(assignment.rightRingId)
+          ? assignment.rightRingId
+          : null,
+    );
+  }
+
   void _notifyListeners() {
     if (!_isDisposed) {
       notifyListeners();
@@ -424,6 +637,7 @@ class YogaSessionController with ChangeNotifier {
     _isDisposed = true;
     _requestStop();
     unawaited(_ttsFeedbackService.dispose());
+    unawaited(_countdownSoundService.dispose());
     super.dispose();
   }
 }

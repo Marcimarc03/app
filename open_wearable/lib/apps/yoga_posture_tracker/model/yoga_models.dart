@@ -5,7 +5,7 @@ import 'package:open_earable_flutter/open_earable_flutter.dart';
 enum YogaSessionPhase {
   idle,
   checkingDevices,
-  assigningRings,
+  poseSelection,
   calibrationInstructions,
   calibrating,
   poseInstructions,
@@ -16,12 +16,18 @@ enum YogaSessionPhase {
 }
 
 class YogaPose {
+  final String id;
   final String name;
   final String instruction;
+  final String imageAsset;
+  final bool isEvaluationAvailable;
 
   const YogaPose({
+    required this.id,
     required this.name,
     required this.instruction,
+    required this.imageAsset,
+    this.isEvaluationAvailable = false,
   });
 }
 
@@ -75,6 +81,20 @@ class RingAssignment {
     return RingAssignment(
       leftRingId: leftRingId ?? this.leftRingId,
       rightRingId: rightRingId ?? this.rightRingId,
+    );
+  }
+
+  RingAssignment assignLeftRing(String ringId) {
+    return RingAssignment(
+      leftRingId: ringId,
+      rightRingId: rightRingId == ringId ? leftRingId : rightRingId,
+    );
+  }
+
+  RingAssignment assignRightRing(String ringId) {
+    return RingAssignment(
+      leftRingId: leftRingId == ringId ? rightRingId : leftRingId,
+      rightRingId: ringId,
     );
   }
 }
@@ -361,9 +381,81 @@ class YogaPostureTrackerThresholds {
   static const double armGyroInstability = 120;
   static const double headGyroInstability = 120;
   static const double calibrationGyroInstability = 80;
+
+  static const double chairArmElevationPerfectMinDegrees = 165;
+  static const double chairArmElevationGoodMinDegrees = 150;
+  static const double chairArmSymmetryPerfectDegrees = 5;
+  static const double chairArmSymmetryGoodDegrees = 10;
+  static const double chairHandSymmetryPerfectDegrees = 10;
+  static const double chairHandSymmetryGoodDegrees = 20;
+  static const double chairHeadPitchGoodDegrees = 20;
+  static const double chairHeadRollGoodDegrees = 10;
+
+  static const double triangleUpperArmPerfectMinDegrees = 165;
+  static const double triangleUpperArmGoodMinDegrees = 150;
+  static const double triangleLowerArmPerfectMaxDegrees = 30;
+  static const double triangleLowerArmGoodMaxDegrees = 45;
+  static const double triangleArmLinePerfectDifferenceDegrees = 150;
+  static const double triangleArmLineGoodDifferenceDegrees = 130;
+  static const double triangleHeadPitchPerfectDegrees = 20;
+  static const double triangleHeadPitchGoodDegrees = 30;
+  static const double triangleHeadRollPerfectDegrees = 15;
+  static const double triangleHeadRollGoodDegrees = 25;
+
+  static const double cobraHeadLiftPerfectMinDegrees = 20;
+  static const double cobraHeadLiftPerfectMaxDegrees = 40;
+  static const double cobraHeadLiftGoodMinDegrees = 15;
+  static const double cobraHeadLiftGoodMaxDegrees = 50;
+  static const double cobraHeadRollPerfectDegrees = 5;
+  static const double cobraHeadRollGoodDegrees = 10;
+  static const double cobraHandSymmetryPerfectDegrees = 10;
+  static const double cobraHandSymmetryGoodDegrees = 15;
 }
 
 const YogaPose warriorTwoPose = YogaPose(
+  id: 'warrior_ii',
   name: 'Warrior II',
-  instruction: 'Move into Warrior II and hold the pose for 30 seconds.',
+  instruction:
+      'Step into a wide stance, raise your arms to shoulder height, bend your front knee softly, and gaze over your front hand.',
+  imageAsset: 'lib/apps/yoga_posture_tracker/assets/warrior_ii_pose2.png',
+  isEvaluationAvailable: true,
 );
+
+const YogaPose trianglePose = YogaPose(
+  id: 'triangle',
+  name: 'Triangle',
+  instruction:
+      'Stand in a wide stance, reach one hand toward your front leg, extend the other arm upward, and turn your gaze toward the upper hand.',
+  imageAsset: 'lib/apps/yoga_posture_tracker/assets/triangle_pose.png',
+  isEvaluationAvailable: true,
+);
+
+const YogaPose chairPose = YogaPose(
+  id: 'chair',
+  name: 'Chair',
+  instruction:
+      'Bend your knees, sit your hips back, keep your chest lifted, and reach both arms upward.',
+  imageAsset: 'lib/apps/yoga_posture_tracker/assets/chair_pose.png',
+  isEvaluationAvailable: true,
+);
+
+const YogaPose cobraPose = YogaPose(
+  id: 'cobra',
+  name: 'Cobra',
+  instruction:
+      'Lie on your front, place your hands beside the ribs, and gently lift your head and chest forward.',
+  imageAsset: 'lib/apps/yoga_posture_tracker/assets/cobra_pose.png',
+  isEvaluationAvailable: true,
+);
+
+const List<YogaPose> yogaPostureTrackerPoses = [
+  warriorTwoPose,
+  trianglePose,
+  chairPose,
+  cobraPose,
+];
+
+const String yogaCalibrationPoseAsset =
+    'lib/apps/yoga_posture_tracker/assets/calibration_pose.png';
+
+const String yogaCalibrationPoseSemanticLabel = 'Calibration pose';

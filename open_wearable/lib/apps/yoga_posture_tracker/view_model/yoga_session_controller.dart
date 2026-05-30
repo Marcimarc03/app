@@ -512,7 +512,7 @@ class YogaSessionController with ChangeNotifier {
     for (var second = duration.inSeconds; second > 0; second--) {
       final tickStartedAt = DateTime.now();
       if (playCalibrationSounds) {
-        await _playCalibrationCountdownTick(generation);
+        unawaited(_playCalibrationCountdownTick(generation));
       }
       final tickElapsed = DateTime.now().difference(tickStartedAt);
       final remainingTickDelay = const Duration(seconds: 1) - tickElapsed;
@@ -526,7 +526,7 @@ class YogaSessionController with ChangeNotifier {
       _notifyListeners();
     }
     if (playCalibrationSounds && _isOperationActive(generation)) {
-      await _countdownSoundService.playCalibrationComplete();
+      unawaited(_countdownSoundService.playCalibrationComplete());
     }
     return true;
   }

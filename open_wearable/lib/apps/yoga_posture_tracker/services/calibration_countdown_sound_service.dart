@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/services.dart';
 import 'package:open_wearable/models/logger.dart';
 
 abstract class CalibrationCountdownSoundService {
@@ -13,6 +15,7 @@ abstract class CalibrationCountdownSoundService {
 
 class GeneratedBeepCountdownSoundService
     implements CalibrationCountdownSoundService {
+  static const Duration _audioCommandTimeout = Duration(milliseconds: 600);
   static final Uint8List _countdownBeep = _SineWaveWav.create(
     frequencyHz: 880,
     duration: const Duration(milliseconds: 160),
@@ -22,20 +25,27 @@ class GeneratedBeepCountdownSoundService
     duration: const Duration(milliseconds: 260),
   );
 
-  final AudioPlayer _player;
+  final AudioPlayer _countdownPlayer;
+  final AudioPlayer _completePlayer;
+  Future<void>? _initializeFuture;
   bool _isDisposed = false;
 
-  GeneratedBeepCountdownSoundService({AudioPlayer? player})
-      : _player = player ?? AudioPlayer();
+  GeneratedBeepCountdownSoundService({
+    AudioPlayer? countdownPlayer,
+    AudioPlayer? completePlayer,
+  })  : _countdownPlayer = countdownPlayer ?? AudioPlayer(),
+        _completePlayer = completePlayer ?? AudioPlayer() {
+    unawaited(_initialize());
+  }
 
   @override
   Future<void> playCountdownTick() {
-    return _play(_countdownBeep);
+    return _play(_countdownPlayer, fallbackClickCount: 1);
   }
 
   @override
   Future<void> playCalibrationComplete() {
-    return _play(_completeBeep);
+    return _play(_completePlayer, fallbackClickCount: 2);
   }
 
   @override
@@ -44,7 +54,10 @@ class GeneratedBeepCountdownSoundService
       return;
     }
     try {
-      await _player.stop();
+      await Future.wait([
+        _countdownPlayer.stop().timeout(_audioCommandTimeout),
+        _completePlayer.stop().timeout(_audioCommandTimeout),
+      ]);
     } catch (error, stackTrace) {
       logger.w(
         'Yoga calibration countdown sound stop failed.',
@@ -61,7 +74,10 @@ class GeneratedBeepCountdownSoundService
     }
     _isDisposed = true;
     try {
-      await _player.dispose();
+      await Future.wait([
+        _countdownPlayer.dispose().timeout(_audioCommandTimeout),
+        _completePlayer.dispose().timeout(_audioCommandTimeout),
+      ]);
     } catch (error, stackTrace) {
       logger.w(
         'Yoga calibration countdown sound dispose failed.',
@@ -71,23 +87,79 @@ class GeneratedBeepCountdownSoundService
     }
   }
 
-  Future<void> _play(Uint8List bytes) async {
+  Future<void> _play(
+    AudioPlayer player, {
+    required int fallbackClickCount,
+  }) async {
     if (_isDisposed) {
       return;
     }
     try {
-      await _player.stop();
-      await _player.play(
-        BytesSource(bytes, mimeType: 'audio/wav'),
-        mode: PlayerMode.lowLatency,
-        volume: 1,
-      );
+      await _initialize().timeout(_audioCommandTimeout);
+      if (_isDisposed) {
+        return;
+      }
+      await player.resume().timeout(_audioCommandTimeout);
     } catch (error, stackTrace) {
       logger.w(
         'Yoga calibration countdown sound playback failed.',
         error: error,
         stackTrace: stackTrace,
       );
+      await _playSystemFallback(fallbackClickCount);
+    }
+  }
+
+  Future<void> _initialize() {
+    final activeInitialization = _initializeFuture;
+    if (activeInitialization != null) {
+      return activeInitialization;
+    }
+
+    final initialization = Future.wait([
+      _preparePlayer(_countdownPlayer, _countdownBeep),
+      _preparePlayer(_completePlayer, _completeBeep),
+    ]).then<void>((_) {});
+    _initializeFuture = initialization.catchError(
+      (Object error, StackTrace stackTrace) {
+        if (identical(_initializeFuture, initialization)) {
+          _initializeFuture = null;
+        }
+        Error.throwWithStackTrace(error, stackTrace);
+      },
+    );
+    return _initializeFuture!;
+  }
+
+  Future<void> _preparePlayer(AudioPlayer player, Uint8List bytes) async {
+    await player.setPlayerMode(PlayerMode.mediaPlayer).timeout(
+          _audioCommandTimeout,
+        );
+    await player.setReleaseMode(ReleaseMode.stop).timeout(
+          _audioCommandTimeout,
+        );
+    await player.setVolume(1).timeout(_audioCommandTimeout);
+    await player
+        .setSource(BytesSource(bytes, mimeType: 'audio/wav'))
+        .timeout(_audioCommandTimeout);
+  }
+
+  Future<void> _playSystemFallback(int clickCount) async {
+    for (var i = 0; i < clickCount; i++) {
+      try {
+        await SystemSound.play(SystemSoundType.click).timeout(
+          _audioCommandTimeout,
+        );
+      } catch (error, stackTrace) {
+        logger.w(
+          'Yoga calibration fallback system sound failed.',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+      if (i < clickCount - 1) {
+        await Future<void>.delayed(const Duration(milliseconds: 90));
+      }
     }
   }
 }

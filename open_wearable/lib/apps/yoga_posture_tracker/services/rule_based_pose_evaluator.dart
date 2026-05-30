@@ -302,8 +302,8 @@ class RuleBasedPoseEvaluator {
           YogaPostureTrackerThresholds.triangleUpperArmGoodMinDegrees) {
         errors.add(
           PostureError(
-            code: 'triangle_upper_arm_too_low',
-            message: 'Stretch your upper arm further upward.',
+            code: 'triangle_${upperArm.side}_upper_arm_too_low',
+            message: 'Stretch your ${upperArm.side} upper arm further upward.',
             severity: upperArm.elevationDegrees < 130
                 ? PostureErrorSeverity.severe
                 : PostureErrorSeverity.medium,
@@ -325,9 +325,9 @@ class RuleBasedPoseEvaluator {
           YogaPostureTrackerThresholds.triangleLowerArmGoodMaxDegrees) {
         errors.add(
           PostureError(
-            code: 'triangle_lower_arm_too_high',
+            code: 'triangle_${lowerArm.side}_lower_arm_too_high',
             message:
-                'Move your lower hand closer toward your leg or the floor.',
+                'Move your ${lowerArm.side} lower hand closer toward your leg or the floor.',
             severity: lowerArm.elevationDegrees > 65
                 ? PostureErrorSeverity.severe
                 : PostureErrorSeverity.medium,
@@ -880,6 +880,7 @@ class RuleBasedPoseEvaluator {
     final gyroMeanMagnitude =
         vectorStats(poseWindow.ringGyroscopeSamplesFor(ringId)).meanMagnitude;
     return _RingPoseMetrics(
+      side: side,
       elevationDegrees: angleBetweenVectorsDegrees(
         baselineMean,
         poseStats.mean,
@@ -1358,6 +1359,7 @@ class _ArmPoseMetrics {
 }
 
 class _RingPoseMetrics {
+  final String side;
   final double elevationDegrees;
   final double handPitchDelta;
   final double handRollDelta;
@@ -1365,6 +1367,7 @@ class _RingPoseMetrics {
   final bool isStable;
 
   const _RingPoseMetrics({
+    required this.side,
     required this.elevationDegrees,
     required this.handPitchDelta,
     required this.handRollDelta,

@@ -386,8 +386,16 @@ class TemplateLlmFeedbackService implements LlmFeedbackService {
       'chair_unstable' =>
         'Hold the pose more steadily, and also sit your hips back.',
       'triangle_upper_arm_too_low' => 'Stretch your upper arm further upward.',
+      'triangle_left_upper_arm_too_low' =>
+        'Stretch your left upper arm further upward.',
+      'triangle_right_upper_arm_too_low' =>
+        'Stretch your right upper arm further upward.',
       'triangle_lower_arm_too_high' =>
         'Move your lower hand closer toward your leg or the floor.',
+      'triangle_left_lower_arm_too_high' =>
+        'Move your left lower hand closer toward your leg or the floor.',
+      'triangle_right_lower_arm_too_high' =>
+        'Move your right lower hand closer toward your leg or the floor.',
       'triangle_arm_line_unclear' =>
         'Stretch both arms in opposite directions.',
       'triangle_head_uncontrolled' => 'Keep your neck long and controlled.',

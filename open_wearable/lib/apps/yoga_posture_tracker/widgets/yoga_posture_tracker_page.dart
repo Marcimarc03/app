@@ -1083,6 +1083,8 @@ class _ResultScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final result = this.result;
     final feedback = this.feedback;
+    final groupedErrors =
+        result == null ? null : _GroupedPostureErrors.from(result.errors);
 
     return ListView(
       padding: SensorPageSpacing.pagePaddingWithBottomInset(context),
@@ -1106,24 +1108,32 @@ class _ResultScreen extends StatelessWidget {
         else ...[
           _IssueGroupCard(
             title: 'Left arm issue(s)',
-            errors: _errorsForPrefix(result.errors, 'left_'),
+            errors: groupedErrors!.leftArm,
           ),
           const SizedBox(height: 8),
           _IssueGroupCard(
             title: 'Right arm issue(s)',
-            errors: _errorsForPrefix(result.errors, 'right_'),
+            errors: groupedErrors.rightArm,
           ),
+          if (groupedErrors.bothArmsAndHands.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _IssueGroupCard(
+              title: 'Both arms / hands issue(s)',
+              errors: groupedErrors.bothArmsAndHands,
+            ),
+          ],
           const SizedBox(height: 8),
           _IssueGroupCard(
-            title: 'Head/posture issue(s)',
-            errors: result.errors
-                .where(
-                  (error) =>
-                      !error.code.startsWith('left_') &&
-                      !error.code.startsWith('right_'),
-                )
-                .toList(growable: false),
+            title: 'Head issue(s)',
+            errors: groupedErrors.head,
           ),
+          if (groupedErrors.other.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _IssueGroupCard(
+              title: 'Other issue(s)',
+              errors: groupedErrors.other,
+            ),
+          ],
         ],
         const SizedBox(height: SensorPageSpacing.sectionGap),
         SafeArea(
@@ -1151,14 +1161,89 @@ class _ResultScreen extends StatelessWidget {
       ],
     );
   }
+}
 
-  List<PostureError> _errorsForPrefix(
-    List<PostureError> errors,
-    String prefix,
-  ) {
-    return errors
-        .where((error) => error.code.startsWith(prefix))
-        .toList(growable: false);
+class _GroupedPostureErrors {
+  static const Set<String> _bothArmOrHandCodes = {
+    'chair_arms_uneven',
+    'chair_hands_asymmetric',
+    'triangle_arm_line_unclear',
+    'cobra_hands_asymmetric',
+    'cobra_unstable',
+  };
+
+  final List<PostureError> leftArm;
+  final List<PostureError> rightArm;
+  final List<PostureError> bothArmsAndHands;
+  final List<PostureError> head;
+  final List<PostureError> other;
+
+  const _GroupedPostureErrors({
+    required this.leftArm,
+    required this.rightArm,
+    required this.bothArmsAndHands,
+    required this.head,
+    required this.other,
+  });
+
+  factory _GroupedPostureErrors.from(List<PostureError> errors) {
+    final leftArm = <PostureError>[];
+    final rightArm = <PostureError>[];
+    final bothArmsAndHands = <PostureError>[];
+    final head = <PostureError>[];
+    final other = <PostureError>[];
+
+    for (final error in errors) {
+      final area = _PostureIssueArea.fromCode(error.code);
+      switch (area) {
+        case _PostureIssueArea.leftArm:
+          leftArm.add(error);
+        case _PostureIssueArea.rightArm:
+          rightArm.add(error);
+        case _PostureIssueArea.bothArmsAndHands:
+          bothArmsAndHands.add(error);
+        case _PostureIssueArea.head:
+          head.add(error);
+        case _PostureIssueArea.other:
+          other.add(error);
+      }
+    }
+
+    return _GroupedPostureErrors(
+      leftArm: leftArm,
+      rightArm: rightArm,
+      bothArmsAndHands: bothArmsAndHands,
+      head: head,
+      other: other,
+    );
+  }
+}
+
+enum _PostureIssueArea {
+  leftArm,
+  rightArm,
+  bothArmsAndHands,
+  head,
+  other;
+
+  static _PostureIssueArea fromCode(String code) {
+    if (code.startsWith('left_') || code.contains('_left_')) {
+      return _PostureIssueArea.leftArm;
+    }
+    if (code.startsWith('right_') || code.contains('_right_')) {
+      return _PostureIssueArea.rightArm;
+    }
+    if (code.contains('head')) {
+      return _PostureIssueArea.head;
+    }
+    if (_GroupedPostureErrors._bothArmOrHandCodes.contains(code) ||
+        code.contains('arm') ||
+        code.contains('hand') ||
+        code.contains('palm') ||
+        code.contains('ring')) {
+      return _PostureIssueArea.bothArmsAndHands;
+    }
+    return _PostureIssueArea.other;
   }
 }
 

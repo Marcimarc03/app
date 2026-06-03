@@ -88,6 +88,80 @@ void main() {
       expect(result.errors, isEmpty);
     });
 
+    test('returns green marker statuses for aligned Warrior II data', () {
+      final markers = evaluator.evaluatePoseMarkers(
+        pose: warriorTwoPose,
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          leftArmVector: _warriorTwoArmVector,
+          rightArmVector: _warriorTwoArmVector,
+        ),
+      );
+
+      expect(
+        _markerStatus(markers, PoseMarkerType.head),
+        PoseMarkerStatus.good,
+      );
+      expect(
+        _markerStatus(markers, PoseMarkerType.leftHand),
+        PoseMarkerStatus.good,
+      );
+      expect(
+        _markerStatus(markers, PoseMarkerType.rightHand),
+        PoseMarkerStatus.good,
+      );
+    });
+
+    test('returns red marker status for a clearly misaligned Warrior II hand',
+        () {
+      final markers = evaluator.evaluatePoseMarkers(
+        pose: warriorTwoPose,
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          leftArmVector: _armDownVector,
+          rightArmVector: _warriorTwoArmVector,
+        ),
+      );
+
+      expect(
+        _markerStatus(markers, PoseMarkerType.leftHand),
+        PoseMarkerStatus.bad,
+      );
+      expect(
+        _markerStatus(markers, PoseMarkerType.rightHand),
+        PoseMarkerStatus.good,
+      );
+    });
+
+    test('returns gray marker statuses when live Warrior II data is missing',
+        () {
+      const emptyWindow = SensorWindow(
+        earableAccelerometerSamples: [],
+        earableGyroscopeSamples: [],
+        ringAccelerometerSamplesByDeviceId: {},
+        ringGyroscopeSamplesByDeviceId: {},
+      );
+
+      final markers = evaluator.evaluatePoseMarkers(
+        pose: warriorTwoPose,
+        calibration: calibration,
+        poseWindow: emptyWindow,
+      );
+
+      expect(
+        _markerStatus(markers, PoseMarkerType.head),
+        PoseMarkerStatus.noData,
+      );
+      expect(
+        _markerStatus(markers, PoseMarkerType.leftHand),
+        PoseMarkerStatus.noData,
+      );
+      expect(
+        _markerStatus(markers, PoseMarkerType.rightHand),
+        PoseMarkerStatus.noData,
+      );
+    });
+
     test('scores a stable Chair window without errors', () {
       final result = evaluator.evaluatePose(
         pose: chairPose,
@@ -393,4 +467,11 @@ SensorWindow _poseWindow({
       ],
     },
   );
+}
+
+PoseMarkerStatus _markerStatus(
+  List<PoseMarkerFeedback> markers,
+  PoseMarkerType type,
+) {
+  return markers.singleWhere((marker) => marker.type == type).status;
 }

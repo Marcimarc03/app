@@ -66,6 +66,20 @@ class RuleBasedPoseEvaluator {
     };
   }
 
+  List<PoseMarkerFeedback> evaluatePoseMarkers({
+    required YogaPose pose,
+    required CalibrationData calibration,
+    required SensorWindow poseWindow,
+  }) {
+    return switch (pose.id) {
+      'warrior_ii' => evaluateWarriorTwoMarkers(
+          calibration: calibration,
+          poseWindow: poseWindow,
+        ),
+      _ => const [],
+    };
+  }
+
   PoseEvaluationResult evaluateWarriorTwo({
     required CalibrationData calibration,
     required SensorWindow poseWindow,
@@ -129,7 +143,40 @@ class RuleBasedPoseEvaluator {
       min(100, (earnedScore / _measurableScoreTotal * 100).round()),
     );
 
-    return PoseEvaluationResult(score: score, errors: errors);
+    return PoseEvaluationResult(
+      score: score,
+      errors: errors,
+      markerFeedback: evaluateWarriorTwoMarkers(
+        calibration: calibration,
+        poseWindow: poseWindow,
+      ),
+    );
+  }
+
+  List<PoseMarkerFeedback> evaluateWarriorTwoMarkers({
+    required CalibrationData calibration,
+    required SensorWindow poseWindow,
+  }) {
+    return [
+      _evaluateWarriorTwoHeadMarker(
+        calibration: calibration,
+        poseWindow: poseWindow,
+      ),
+      _evaluateWarriorTwoHandMarker(
+        type: PoseMarkerType.leftHand,
+        side: 'left',
+        ringId: calibration.ringAssignment.leftRingId,
+        calibration: calibration,
+        poseWindow: poseWindow,
+      ),
+      _evaluateWarriorTwoHandMarker(
+        type: PoseMarkerType.rightHand,
+        side: 'right',
+        ringId: calibration.ringAssignment.rightRingId,
+        calibration: calibration,
+        poseWindow: poseWindow,
+      ),
+    ];
   }
 
   PoseEvaluationResult evaluateChair({
@@ -603,7 +650,211 @@ class RuleBasedPoseEvaluator {
         return a.code.compareTo(b.code);
       });
 
-    return PoseEvaluationResult(score: score, errors: errors);
+    return PoseEvaluationResult(
+      score: score,
+      errors: errors,
+      markerFeedback: _aggregateMarkerFeedback(results),
+    );
+  }
+
+  List<PoseMarkerFeedback> _aggregateMarkerFeedback(
+    List<PoseEvaluationResult> results,
+  ) {
+    final markersByType = <PoseMarkerType, List<PoseMarkerFeedback>>{};
+    for (final result in results) {
+      for (final marker in result.markerFeedback) {
+        markersByType.putIfAbsent(marker.type, () => []).add(marker);
+      }
+    }
+    if (markersByType.isEmpty) {
+      return const [];
+    }
+
+    return [
+      for (final type in PoseMarkerType.values)
+        if (markersByType.containsKey(type))
+          _aggregateMarkerFeedbackForType(markersByType[type]!),
+    ];
+  }
+
+  PoseMarkerFeedback _aggregateMarkerFeedbackForType(
+    List<PoseMarkerFeedback> markers,
+  ) {
+    final worst = markers.reduce(
+      (current, next) =>
+          _markerStatusRank(next.status) > _markerStatusRank(current.status)
+              ? next
+              : current,
+    );
+    final measuredValues = markers
+        .map((marker) => marker.measuredValue)
+        .whereType<double>()
+        .toList(growable: false);
+    final distances = markers
+        .map((marker) => marker.distanceFromTargetDegrees)
+        .whereType<double>()
+        .toList(growable: false);
+
+    return PoseMarkerFeedback(
+      type: worst.type,
+      status: worst.status,
+      message: worst.message,
+      measuredValue: measuredValues.isEmpty
+          ? worst.measuredValue
+          : measuredValues.fold<double>(0, (sum, value) => sum + value) /
+              measuredValues.length,
+      distanceFromTargetDegrees: distances.isEmpty
+          ? worst.distanceFromTargetDegrees
+          : distances.reduce(max),
+    );
+  }
+
+  PoseMarkerFeedback _evaluateWarriorTwoHeadMarker({
+    required CalibrationData calibration,
+    required SensorWindow poseWindow,
+  }) {
+    final delta = _headDelta(calibration, poseWindow);
+    if (delta == null) {
+      return const PoseMarkerFeedback(
+        type: PoseMarkerType.head,
+        status: PoseMarkerStatus.noData,
+        message: 'Waiting for OpenEarable head data.',
+      );
+    }
+
+    final pitch = delta.pitch.abs();
+    final roll = delta.roll.abs();
+    final orientationOffset = max(pitch, roll);
+    final orientationStatus = _absoluteMarkerStatus(
+      value: orientationOffset,
+      perfectMax: YogaPostureTrackerThresholds.headPitchRollPerfectDegrees,
+      goodMax: YogaPostureTrackerThresholds.headPitchRollGoodDegrees,
+    );
+    final gyroStats = vectorStats(poseWindow.earableGyroscopeSamples);
+    final stabilityStatus = gyroStats.hasData
+        ? _maximumMarkerStatus(
+            value: gyroStats.meanMagnitude,
+            goodMax: YogaPostureTrackerThresholds.headGyroInstability,
+          )
+        : null;
+    final status = _worstMarkerStatus(
+      [
+        orientationStatus,
+        if (stabilityStatus != null) stabilityStatus,
+      ],
+    );
+
+    return PoseMarkerFeedback(
+      type: PoseMarkerType.head,
+      status: status,
+      message: switch (status) {
+        PoseMarkerStatus.good => 'Head position is in range.',
+        PoseMarkerStatus.warning => 'Keep your head a little more level.',
+        PoseMarkerStatus.bad => gyroStats.hasData &&
+                gyroStats.meanMagnitude >
+                    YogaPostureTrackerThresholds.headGyroInstability
+            ? 'Keep your head steadier.'
+            : 'Bring your head back toward neutral.',
+        PoseMarkerStatus.noData => 'Waiting for OpenEarable head data.',
+      },
+      measuredValue: orientationOffset,
+      distanceFromTargetDegrees: _absoluteDistanceFromTarget(
+        value: orientationOffset,
+        targetMax: YogaPostureTrackerThresholds.headPitchRollPerfectDegrees,
+      ),
+    );
+  }
+
+  PoseMarkerFeedback _evaluateWarriorTwoHandMarker({
+    required PoseMarkerType type,
+    required String side,
+    required String? ringId,
+    required CalibrationData calibration,
+    required SensorWindow poseWindow,
+  }) {
+    final markerTypeLabel = side == 'left' ? 'left ring' : 'right ring';
+    if (ringId == null) {
+      return PoseMarkerFeedback(
+        type: type,
+        status: PoseMarkerStatus.noData,
+        message: 'Waiting for $markerTypeLabel assignment.',
+      );
+    }
+
+    final metrics = _ringArmMetrics(
+      side: side,
+      ringId: ringId,
+      calibration: calibration,
+      poseWindow: poseWindow,
+      errors: <PostureError>[],
+      missingCodePrefix: 'marker',
+    );
+    if (metrics == null) {
+      return PoseMarkerFeedback(
+        type: type,
+        status: PoseMarkerStatus.noData,
+        message: 'Waiting for live $markerTypeLabel data.',
+      );
+    }
+
+    final palmRotationDegrees = metrics.handRollDelta.abs();
+    final elevationStatus = _rangeMarkerStatus(
+      value: metrics.elevationDegrees,
+      perfectMin: YogaPostureTrackerThresholds.armElevationPerfectMinDegrees,
+      perfectMax: YogaPostureTrackerThresholds.armElevationPerfectMaxDegrees,
+      goodMin: YogaPostureTrackerThresholds.armElevationGoodMinDegrees,
+      goodMax: YogaPostureTrackerThresholds.armElevationGoodMaxDegrees,
+    );
+    final palmStatus = _rangeMarkerStatus(
+      value: palmRotationDegrees,
+      perfectMin: YogaPostureTrackerThresholds.palmRotationPerfectMinDegrees,
+      perfectMax: YogaPostureTrackerThresholds.palmRotationPerfectMaxDegrees,
+      goodMin: YogaPostureTrackerThresholds.palmRotationGoodMinDegrees,
+      goodMax: YogaPostureTrackerThresholds.palmRotationGoodMaxDegrees,
+    );
+    final stabilityStatus = metrics.hasGyroData
+        ? _maximumMarkerStatus(
+            value: metrics.gyroMeanMagnitude,
+            goodMax: YogaPostureTrackerThresholds.armGyroInstability,
+          )
+        : null;
+    final status = _worstMarkerStatus(
+      [
+        elevationStatus,
+        palmStatus,
+        if (stabilityStatus != null) stabilityStatus,
+      ],
+    );
+    final distanceFromTarget = max(
+      _rangeDistanceFromTarget(
+        value: metrics.elevationDegrees,
+        targetMin: YogaPostureTrackerThresholds.armElevationPerfectMinDegrees,
+        targetMax: YogaPostureTrackerThresholds.armElevationPerfectMaxDegrees,
+      ),
+      _rangeDistanceFromTarget(
+        value: palmRotationDegrees,
+        targetMin: YogaPostureTrackerThresholds.palmRotationPerfectMinDegrees,
+        targetMax: YogaPostureTrackerThresholds.palmRotationPerfectMaxDegrees,
+      ),
+    );
+
+    return PoseMarkerFeedback(
+      type: type,
+      status: status,
+      message: switch (status) {
+        PoseMarkerStatus.good => 'The $markerTypeLabel is in range.',
+        PoseMarkerStatus.warning =>
+          'Adjust the $markerTypeLabel slightly toward the target.',
+        PoseMarkerStatus.bad => metrics.hasGyroData &&
+                metrics.gyroMeanMagnitude >
+                    YogaPostureTrackerThresholds.armGyroInstability
+            ? 'Hold the $markerTypeLabel steadier.'
+            : 'Move the $markerTypeLabel closer to Warrior II alignment.',
+        PoseMarkerStatus.noData => 'Waiting for live $markerTypeLabel data.',
+      },
+      measuredValue: max(metrics.elevationDegrees, palmRotationDegrees),
+      distanceFromTargetDegrees: distanceFromTarget,
+    );
   }
 
   double _evaluateHeadNeutral(
@@ -877,8 +1128,8 @@ class RuleBasedPoseEvaluator {
       baselineMean: baselineMean,
       poseMean: poseStats.mean,
     );
-    final gyroMeanMagnitude =
-        vectorStats(poseWindow.ringGyroscopeSamplesFor(ringId)).meanMagnitude;
+    final gyroStats = vectorStats(poseWindow.ringGyroscopeSamplesFor(ringId));
+    final gyroMeanMagnitude = gyroStats.meanMagnitude;
     return _RingPoseMetrics(
       side: side,
       elevationDegrees: angleBetweenVectorsDegrees(
@@ -888,6 +1139,7 @@ class RuleBasedPoseEvaluator {
       handPitchDelta: orientationDelta.pitch,
       handRollDelta: orientationDelta.roll,
       gyroMeanMagnitude: gyroMeanMagnitude,
+      hasGyroData: gyroStats.hasData,
       isStable:
           gyroMeanMagnitude <= YogaPostureTrackerThresholds.armGyroInstability,
     );
@@ -1342,6 +1594,83 @@ class RuleBasedPoseEvaluator {
     }
     return 0;
   }
+
+  PoseMarkerStatus _rangeMarkerStatus({
+    required double value,
+    required double perfectMin,
+    required double perfectMax,
+    required double goodMin,
+    required double goodMax,
+  }) {
+    if (value >= perfectMin && value <= perfectMax) {
+      return PoseMarkerStatus.good;
+    }
+    if (value >= goodMin && value <= goodMax) {
+      return PoseMarkerStatus.warning;
+    }
+    return PoseMarkerStatus.bad;
+  }
+
+  PoseMarkerStatus _absoluteMarkerStatus({
+    required double value,
+    required double perfectMax,
+    required double goodMax,
+  }) {
+    if (value <= perfectMax) {
+      return PoseMarkerStatus.good;
+    }
+    if (value <= goodMax) {
+      return PoseMarkerStatus.warning;
+    }
+    return PoseMarkerStatus.bad;
+  }
+
+  PoseMarkerStatus _maximumMarkerStatus({
+    required double value,
+    required double goodMax,
+  }) {
+    return value <= goodMax ? PoseMarkerStatus.good : PoseMarkerStatus.bad;
+  }
+
+  PoseMarkerStatus _worstMarkerStatus(List<PoseMarkerStatus> statuses) {
+    if (statuses.isEmpty) {
+      return PoseMarkerStatus.noData;
+    }
+    return statuses.reduce(
+      (current, next) =>
+          _markerStatusRank(next) > _markerStatusRank(current) ? next : current,
+    );
+  }
+
+  int _markerStatusRank(PoseMarkerStatus status) {
+    return switch (status) {
+      PoseMarkerStatus.noData => 0,
+      PoseMarkerStatus.good => 1,
+      PoseMarkerStatus.warning => 2,
+      PoseMarkerStatus.bad => 3,
+    };
+  }
+
+  double _rangeDistanceFromTarget({
+    required double value,
+    required double targetMin,
+    required double targetMax,
+  }) {
+    if (value < targetMin) {
+      return targetMin - value;
+    }
+    if (value > targetMax) {
+      return value - targetMax;
+    }
+    return 0;
+  }
+
+  double _absoluteDistanceFromTarget({
+    required double value,
+    required double targetMax,
+  }) {
+    return value > targetMax ? value - targetMax : 0;
+  }
 }
 
 class _ArmPoseMetrics {
@@ -1364,6 +1693,7 @@ class _RingPoseMetrics {
   final double handPitchDelta;
   final double handRollDelta;
   final double gyroMeanMagnitude;
+  final bool hasGyroData;
   final bool isStable;
 
   const _RingPoseMetrics({
@@ -1372,6 +1702,7 @@ class _RingPoseMetrics {
     required this.handPitchDelta,
     required this.handRollDelta,
     required this.gyroMeanMagnitude,
+    required this.hasGyroData,
     required this.isStable,
   });
 }

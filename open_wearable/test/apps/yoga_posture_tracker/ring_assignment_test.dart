@@ -21,6 +21,18 @@ void main() {
         isTrue,
       );
     });
+
+    test('exposes difficulty labels for the pose selection cards', () {
+      expect(
+        yogaPostureTrackerPoses.map((pose) => pose.difficulty.label),
+        [
+          'Intermediate',
+          'Intermediate',
+          'Beginner',
+          'Beginner',
+        ],
+      );
+    });
   });
 
   group('RingAssignment', () {

@@ -1,11 +1,13 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:open_earable_flutter/open_earable_flutter.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/model/yoga_models.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/services/yoga_sensor_service.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/view_model/yoga_session_controller.dart';
+import 'package:open_wearable/apps/yoga_posture_tracker/widgets/pose_silhouette_feedback_view.dart';
 import 'package:open_wearable/models/device_name_formatter.dart';
 import 'package:open_wearable/view_models/wearables_provider.dart';
 import 'package:open_wearable/widgets/sensors/sensor_page_spacing.dart';
@@ -161,6 +163,8 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
           instruction: controller.pose.instruction,
           remainingSeconds: controller.remainingSeconds,
           totalSeconds: YogaSessionController.holdDuration.inSeconds,
+          pose: controller.pose,
+          liveMarkerFeedback: controller.livePoseMarkerFeedback,
           liveFeedback: controller.feedback,
           signalQuality: controller.latestSignalQuality,
           onStop: () => unawaited(controller.stopSession(wearablesProvider)),
@@ -169,6 +173,7 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
       YogaSessionPhase.feedback =>
         const _EvaluatingScreen(),
       YogaSessionPhase.result => _ResultScreen(
+          pose: controller.pose,
           result: controller.evaluationResult,
           feedback: controller.feedback,
           signalQuality: controller.latestSignalQuality,
@@ -432,7 +437,7 @@ class _PoseGridCard extends StatelessWidget {
                         ),
                   ),
                   const SizedBox(height: 6),
-                  _PoseAvailabilityPill(isReady: pose.isEvaluationAvailable),
+                  _PoseDifficultyPill(difficulty: pose.difficulty),
                 ],
               ),
             ),
@@ -443,35 +448,69 @@ class _PoseGridCard extends StatelessWidget {
   }
 }
 
-class _PoseAvailabilityPill extends StatelessWidget {
-  final bool isReady;
+class _PoseDifficultyPill extends StatelessWidget {
+  final YogaPoseDifficulty difficulty;
 
-  const _PoseAvailabilityPill({
-    required this.isReady,
+  const _PoseDifficultyPill({
+    required this.difficulty,
   });
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final backgroundColor =
-        isReady ? const Color(0xFFE3F3E5) : colors.surfaceContainerHighest;
-    final foregroundColor =
-        isReady ? const Color(0xFF2E7D32) : colors.onSurfaceVariant;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: backgroundColor,
+        color: colors.secondaryContainer.withValues(alpha: 0.72),
         borderRadius: BorderRadius.circular(999),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        child: Text(
-          isReady ? 'Ready' : 'Next',
-          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: foregroundColor,
-                fontWeight: FontWeight.w800,
-              ),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _DifficultyDots(difficulty: difficulty),
+            const SizedBox(width: 6),
+            Text(
+              difficulty.label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: colors.onSecondaryContainer,
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+          ],
         ),
       ),
+    );
+  }
+}
+
+class _DifficultyDots extends StatelessWidget {
+  final YogaPoseDifficulty difficulty;
+
+  const _DifficultyDots({
+    required this.difficulty,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final activeColor = Theme.of(context).colorScheme.onSecondaryContainer;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var index = 0; index < YogaPoseDifficulty.values.length; index++)
+          Padding(
+            padding: EdgeInsets.only(
+              right: index == YogaPoseDifficulty.values.length - 1 ? 0 : 2,
+            ),
+            child: Icon(
+              Icons.circle,
+              size: 5,
+              color: index < difficulty.indicatorCount
+                  ? activeColor
+                  : activeColor.withValues(alpha: 0.26),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -808,6 +847,8 @@ class _ProgressScreen extends StatelessWidget {
   final String instruction;
   final int remainingSeconds;
   final int totalSeconds;
+  final YogaPose? pose;
+  final ValueListenable<List<PoseMarkerFeedback>>? liveMarkerFeedback;
   final YogaFeedback? liveFeedback;
   final SensorWindowQuality? signalQuality;
   final VoidCallback? onStop;
@@ -818,6 +859,8 @@ class _ProgressScreen extends StatelessWidget {
     required this.instruction,
     required this.remainingSeconds,
     required this.totalSeconds,
+    this.pose,
+    this.liveMarkerFeedback,
     this.liveFeedback,
     this.signalQuality,
     this.onStop,
@@ -836,63 +879,100 @@ class _ProgressScreen extends StatelessWidget {
       child: Column(
         children: [
           Expanded(
-            child: Center(
-              child: Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(icon, size: 42, color: colors.primary),
-                      const SizedBox(height: 12),
-                      Text(
-                        title,
-                        textAlign: TextAlign.center,
-                        style:
-                            Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        instruction,
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 18),
-                      SizedBox(
-                        width: 130,
-                        height: 130,
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            SizedBox.expand(
-                              child: CircularProgressIndicator(
-                                value: progress,
-                                strokeWidth: 9,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return SingleChildScrollView(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight: constraints.maxHeight,
+                    ),
+                    child: Center(
+                      child: Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(icon, size: 42, color: colors.primary),
+                              const SizedBox(height: 12),
+                              Text(
+                                title,
+                                textAlign: TextAlign.center,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineSmall
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w800,
+                                    ),
                               ),
-                            ),
-                            Text(
-                              '$remainingSeconds',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .displaySmall
-                                  ?.copyWith(fontWeight: FontWeight.w800),
-                            ),
-                          ],
+                              const SizedBox(height: 8),
+                              Text(
+                                instruction,
+                                textAlign: TextAlign.center,
+                              ),
+                              if (pose != null &&
+                                  liveMarkerFeedback != null &&
+                                  pose!.id == warriorTwoPose.id) ...[
+                                const SizedBox(height: 16),
+                                ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 360,
+                                  ),
+                                  child: ValueListenableBuilder<
+                                      List<PoseMarkerFeedback>>(
+                                    valueListenable: liveMarkerFeedback!,
+                                    builder: (context, markers, _) {
+                                      return PoseSilhouetteFeedbackView(
+                                        pose: pose!,
+                                        markers: markers,
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                              const SizedBox(height: 18),
+                              SizedBox(
+                                width: 130,
+                                height: 130,
+                                child: Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    SizedBox.expand(
+                                      child: CircularProgressIndicator(
+                                        value: progress,
+                                        strokeWidth: 9,
+                                      ),
+                                    ),
+                                    Text(
+                                      '$remainingSeconds',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .displaySmall
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (liveFeedback != null) ...[
+                                const SizedBox(height: 18),
+                                _LiveFeedbackCard(feedback: liveFeedback!),
+                              ],
+                              if (signalQuality != null) ...[
+                                const SizedBox(height: 12),
+                                _SignalQualityCard(
+                                  signalQuality: signalQuality!,
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
                       ),
-                      if (liveFeedback != null) ...[
-                        const SizedBox(height: 18),
-                        _LiveFeedbackCard(feedback: liveFeedback!),
-                      ],
-                      if (signalQuality != null) ...[
-                        const SizedBox(height: 12),
-                        _SignalQualityCard(signalQuality: signalQuality!),
-                      ],
-                    ],
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ),
           if (onStop != null)
@@ -969,10 +1049,10 @@ class _SignalQualityCard extends StatelessWidget {
         signalQuality.hasIssues ? colors.error : const Color(0xFF2E7D32);
 
     return _ExpandableInfoCard(
-      title: signalQuality.hasIssues
-          ? 'Sensor data needs attention'
-          : 'Sensor data live',
-      subtitle: '${signalQuality.totalSampleCount} samples',
+      title: 'Advanced sensor data',
+      subtitle: signalQuality.hasIssues
+          ? 'Some sensor streams need attention'
+          : 'Sensor streams are active',
       icon: signalQuality.hasIssues
           ? Icons.signal_cellular_connected_no_internet_4_bar
           : Icons.sensors_rounded,
@@ -995,12 +1075,26 @@ class _SignalQualityCard extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(child: Text(stream.label)),
                   Text(
-                    '${stream.sampleCount} samples',
-                    style: Theme.of(context).textTheme.bodySmall,
+                    stream.statusLabel,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: stream.isOk
+                              ? const Color(0xFF2E7D32)
+                              : colors.error,
+                          fontWeight: FontWeight.w700,
+                        ),
                   ),
                 ],
               ),
             ),
+          if (kDebugMode) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Debug: ${signalQuality.totalSampleCount} total samples',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+            ),
+          ],
         ],
       ),
     );
@@ -1065,6 +1159,7 @@ class _EvaluatingScreen extends StatelessWidget {
 }
 
 class _ResultScreen extends StatelessWidget {
+  final YogaPose pose;
   final PoseEvaluationResult? result;
   final YogaFeedback? feedback;
   final SensorWindowQuality? signalQuality;
@@ -1072,6 +1167,7 @@ class _ResultScreen extends StatelessWidget {
   final VoidCallback onDone;
 
   const _ResultScreen({
+    required this.pose,
     required this.result,
     required this.feedback,
     required this.signalQuality,
@@ -1094,6 +1190,18 @@ class _ResultScreen extends StatelessWidget {
           subtitle: feedback?.recommendation ?? 'No feedback generated.',
           icon: Icons.insights_rounded,
         ),
+        if (pose.id == warriorTwoPose.id) ...[
+          const SizedBox(height: SensorPageSpacing.sectionGap),
+          _InfoCard(
+            title: 'Pose status',
+            icon: Icons.accessibility_new_rounded,
+            child: PoseSilhouetteFeedbackView(
+              pose: pose,
+              markers: result?.markerFeedback ?? const [],
+              showLegend: true,
+            ),
+          ),
+        ],
         if (signalQuality != null) ...[
           const SizedBox(height: SensorPageSpacing.sectionGap),
           _SignalQualityCard(signalQuality: signalQuality!),

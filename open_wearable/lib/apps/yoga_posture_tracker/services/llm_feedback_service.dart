@@ -74,8 +74,7 @@ class GeminiLlmFeedbackService implements LlmFeedbackService {
         temperature: 0,
         maxOutputTokens: 32,
       );
-      final response =
-          text == null ? null : _completeSpokenCue(text, minimumWordCount: 3);
+      final response = text == null ? null : _connectionCheckMessage(text);
       if (response == null) {
         return const LlmConnectionCheck(
           isReachable: false,
@@ -125,7 +124,7 @@ class GeminiLlmFeedbackService implements LlmFeedbackService {
           poseName: poseName,
           score: score,
         ),
-        temperature: 0.35,
+        temperature: 0.65,
         maxOutputTokens: _maxOutputTokens,
       );
       final cue = text == null ? null : _completeSpokenCue(text);
@@ -235,14 +234,6 @@ $issues
 Write one natural coaching cue that can be spoken while the student is still holding the pose.
 Use the detected issues to choose the most important correction.
 
-Good examples:
-- "Lift both arms to shoulder height and rotate your palms toward the floor."
-- "Lower your left hand slightly so both arms form one steady line."
-
-Bad examples:
-- "Lift both"
-- "Gently"
-
 Constraints:
 - one complete sentence only
 - 8 to 20 words
@@ -250,6 +241,7 @@ Constraints:
 - no markdown
 - no emojis
 - do not mention sensors, IMU, API, score, or device data
+- use natural wording and avoid fixed or repetitive phrasing
 ''';
   }
 
@@ -312,6 +304,28 @@ Constraints:
       cue = '$cue.';
     }
     return cue;
+  }
+
+  String? _connectionCheckMessage(String text) {
+    final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    String? firstSentence;
+    for (final match in RegExp(r'[^.!?]+[.!?]').allMatches(normalized)) {
+      final sentence = match.group(0)!.trim();
+      firstSentence ??= sentence;
+      final wordCount = RegExp(r"[A-Za-z0-9']+").allMatches(sentence).length;
+      if (wordCount >= 3) {
+        return sentence;
+      }
+    }
+
+    if (firstSentence != null) {
+      return firstSentence;
+    }
+    return RegExp(r'[.!?]$').hasMatch(normalized) ? normalized : '$normalized.';
   }
 }
 

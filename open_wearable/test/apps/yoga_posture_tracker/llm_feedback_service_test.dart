@@ -30,7 +30,10 @@ void main() {
                 {
                   'content': {
                     'parts': [
-                      {'text': 'Hello, the yoga coach is ready.'},
+                      {
+                        'text':
+                            'Hello! The yoga coach is available and ready to help.',
+                      },
                     ],
                   },
                 },
@@ -44,7 +47,7 @@ void main() {
       final result = await service.checkConnection();
 
       expect(result.isReachable, isTrue);
-      expect(result.message, 'Hello, the yoga coach is ready.');
+      expect(result.message, 'The yoga coach is available and ready to help.');
     });
 
     test('reports unreachable when no API key is configured', () async {
@@ -72,6 +75,10 @@ void main() {
           expect(
             body['generationConfig'],
             containsPair('maxOutputTokens', 96),
+          );
+          expect(
+            body['generationConfig'],
+            containsPair('temperature', 0.65),
           );
           return http.Response(
             jsonEncode({

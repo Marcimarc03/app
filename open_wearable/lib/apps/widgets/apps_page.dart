@@ -92,7 +92,7 @@ final List<AppInfo> _apps = [
   AppInfo(
     logoPath: "lib/apps/yoga_posture_tracker/assets/logo.png",
     title: "Yoga Posture Tracker",
-    description: "Track Warrior II with earable and ring IMU data",
+    description: "Track four yoga poses with earable and ring IMU data",
     supportedDevices: _yogaPostureSupportedDevices,
     accentColor: const Color(0xFF4D7C6F),
     widget: const YogaPostureTrackerPage(),

@@ -356,6 +356,41 @@ void main() {
       expect(result.errors.single.measuredValue, 31);
     });
 
+    test(
+        'treats opposite Cobra head-pitch directions symmetrically but '
+        'preserves the sign for diagnostics', () {
+      // Same magnitude (60 degrees, beyond the good range), opposite signs.
+      // The sign convention still requires validation on real hardware, so
+      // classification must not depend on it, but the export must keep it.
+      const pitchUpVector = [-0.8660254038, 0.0, 0.5];
+      const pitchDownVector = [0.8660254038, 0.0, 0.5];
+
+      final resultUp = evaluator.evaluateCobra(
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          headVector: pitchUpVector,
+          leftArmVector: _armDownVector,
+          rightArmVector: _armDownVector,
+        ),
+      );
+      final resultDown = evaluator.evaluateCobra(
+        calibration: calibration,
+        poseWindow: _poseWindow(
+          headVector: pitchDownVector,
+          leftArmVector: _armDownVector,
+          rightArmVector: _armDownVector,
+        ),
+      );
+
+      expect(resultUp.score, resultDown.score);
+      final errorUp = resultUp.errors
+          .singleWhere((error) => error.code == 'cobra_head_overextended');
+      final errorDown = resultDown.errors
+          .singleWhere((error) => error.code == 'cobra_head_overextended');
+      expect(errorUp.measuredValue, closeTo(60, 0.1));
+      expect(errorDown.measuredValue, closeTo(-60, 0.1));
+    });
+
     test('rejects calibration windows with too much movement', () {
       const movingBaseline = SensorWindow(
         earableAccelerometerSamples: [

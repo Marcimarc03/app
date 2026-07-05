@@ -8,7 +8,9 @@ double _parseEnvironmentDouble(String value, double fallback) {
 }
 
 abstract class TtsFeedbackService {
-  Future<void> speak(String text);
+  /// Speaks [text] and waits for completion. Returns false when the cue was
+  /// skipped (already speaking), rejected, or failed over to the fallback.
+  Future<bool> speak(String text);
   Future<void> stop();
   Future<void> dispose();
 }
@@ -92,21 +94,21 @@ class FlutterTtsFeedbackService implements TtsFeedbackService {
   }) : _tts = tts ?? FlutterTts();
 
   @override
-  Future<void> speak(String text) async {
+  Future<bool> speak(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty || _disposed) {
-      return;
+      return false;
     }
     if (_isSpeechInProgress || _activeSpeechCompleter != null) {
       logger.i('Yoga TTS skipped because speech is still in progress.');
-      return;
+      return false;
     }
 
     final generation = ++_generation;
     try {
       await _initialize();
       if (_disposed || generation != _generation) {
-        return;
+        return false;
       }
       final speechCompleter = Completer<void>();
       _activeSpeechCompleter = speechCompleter;
@@ -116,7 +118,7 @@ class FlutterTtsFeedbackService implements TtsFeedbackService {
         _completeActiveSpeech();
         logger.w('Flutter TTS did not start playback. Result: $result');
         await fallback.speak(trimmed);
-        return;
+        return false;
       }
       await speechCompleter.future.timeout(
         _speechTimeoutFor(trimmed),
@@ -125,6 +127,7 @@ class FlutterTtsFeedbackService implements TtsFeedbackService {
           _completeActiveSpeech();
         },
       );
+      return true;
     } catch (error, stackTrace) {
       _completeActiveSpeech();
       logger.w(
@@ -133,6 +136,7 @@ class FlutterTtsFeedbackService implements TtsFeedbackService {
         stackTrace: stackTrace,
       );
       await fallback.speak(trimmed);
+      return false;
     }
   }
 
@@ -238,8 +242,9 @@ class LoggingTtsFeedbackService implements TtsFeedbackService {
   const LoggingTtsFeedbackService();
 
   @override
-  Future<void> speak(String text) async {
+  Future<bool> speak(String text) async {
     logger.i('Yoga TTS feedback: $text');
+    return true;
   }
 
   @override

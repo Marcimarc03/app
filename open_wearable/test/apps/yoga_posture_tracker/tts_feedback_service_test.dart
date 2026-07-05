@@ -91,8 +91,9 @@ void main() {
       final firstCue = service.speak('Lift your left arm.');
       await _waitUntil(() => calls.any((call) => call.method == 'speak'));
 
-      await service.speak('Lower your right arm.');
+      final secondSpoken = await service.speak('Lower your right arm.');
 
+      expect(secondSpoken, isFalse, reason: 'skipped cues report false');
       expect(
         calls.where((call) => call.method == 'speak'),
         hasLength(1),
@@ -100,7 +101,7 @@ void main() {
       expect(calls.map((call) => call.method), isNot(contains('stop')));
 
       await _emitTtsEvent('speak.onComplete');
-      await firstCue;
+      expect(await firstCue, isTrue, reason: 'completed cues report true');
     });
 
     test('ignores empty feedback without calling the platform channel',
@@ -163,8 +164,9 @@ class _RecordingTtsFeedbackService implements TtsFeedbackService {
   var stopCount = 0;
 
   @override
-  Future<void> speak(String text) async {
+  Future<bool> speak(String text) async {
     spokenTexts.add(text);
+    return true;
   }
 
   @override

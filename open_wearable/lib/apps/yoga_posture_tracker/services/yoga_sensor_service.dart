@@ -46,6 +46,31 @@ class YogaSensorService {
     );
   }
 
+  /// Human-readable issues for devices that lack the sensor capabilities the
+  /// yoga evaluation needs. Empty when all connected devices are usable.
+  List<String> capabilityIssues(YogaDeviceSet devices) {
+    final issues = <String>[];
+    final wearables = [
+      if (devices.earable != null) devices.earable!,
+      ...devices.rings,
+    ];
+    for (final wearable in wearables) {
+      final displayName = formatWearableDisplayName(wearable.name);
+      if (!wearable.hasCapability<SensorManager>()) {
+        issues.add('$displayName exposes no sensors.');
+        continue;
+      }
+      final sensors = wearable.requireCapability<SensorManager>().sensors;
+      if (_findSensor(sensors, const ['accelerometer', 'acc']) == null) {
+        issues.add('$displayName has no accelerometer.');
+      }
+      if (_findSensor(sensors, const ['gyroscope', 'gyro', 'gyr']) == null) {
+        issues.add('$displayName has no gyroscope.');
+      }
+    }
+    return issues;
+  }
+
   Future<SensorWindow> collectWindow({
     required YogaDeviceSet devices,
     required WearablesProvider wearablesProvider,

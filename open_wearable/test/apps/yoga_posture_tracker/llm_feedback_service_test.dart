@@ -135,7 +135,7 @@ void main() {
       );
     });
 
-    test('generates pose setup instructions with a dedicated prompt', () async {
+    test('uses the selected pose in the system instruction', () async {
       final service = GeminiLlmFeedbackService(
         apiKey: 'test-key',
         client: MockClient((request) async {
@@ -143,27 +143,17 @@ void main() {
           final systemInstruction =
               body['systemInstruction'] as Map<String, dynamic>;
           final systemParts = systemInstruction['parts'] as List<dynamic>;
-          final userContents = body['contents'] as List<dynamic>;
-          final userParts = (userContents.single
-              as Map<String, dynamic>)['parts'] as List<dynamic>;
-          expect(
-            (systemParts.single as Map<String, dynamic>)['text'],
-            contains('setup cue'),
-          );
-          expect(
-            (userParts.single as Map<String, dynamic>)['text'],
-            contains('wide stance'),
-          );
+          final systemText =
+              (systemParts.single as Map<String, dynamic>)['text'] as String;
+          expect(systemText, contains('during Chair'));
+          expect(systemText, isNot(contains('Warrior II')));
           return http.Response(
             jsonEncode({
               'candidates': [
                 {
                   'content': {
                     'parts': [
-                      {
-                        'text':
-                            'Step into a wide stance, raise both arms, bend your front knee, and gaze over your front hand.',
-                      },
+                      {'text': 'Reach both arms upward and sit deeper.'},
                     ],
                   },
                 },
@@ -174,14 +164,72 @@ void main() {
         }),
       );
 
-      final feedback = await service.generatePoseSetupInstruction(
-        poseName: 'Warrior II',
+      final feedback = await service.generateYogaFeedback(
+        postureErrors: const [],
+        poseName: 'Chair',
+        score: 70,
       );
 
       expect(feedback.generatedByLlm, isTrue);
+    });
+
+    test('falls back when the request exceeds the timeout', () async {
+      final fallback = _RecordingLlmFeedbackService(
+        const YogaFeedback(recommendation: 'Keep both arms steady and long.'),
+      );
+      final service = GeminiLlmFeedbackService(
+        apiKey: 'test-key',
+        fallback: fallback,
+        requestTimeout: const Duration(milliseconds: 50),
+        client: MockClient((request) async {
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          return http.Response('{}', 200);
+        }),
+      );
+
+      final feedback = await service.generateYogaFeedback(
+        postureErrors: const [],
+        poseName: 'Triangle',
+        score: 55,
+      );
+
+      expect(fallback.callCount, 1);
+      expect(feedback.generatedByLlm, isFalse);
+      expect(feedback.recommendation, 'Keep both arms steady and long.');
+    });
+  });
+
+  group('TemplateLlmFeedbackService', () {
+    const template = TemplateLlmFeedbackService();
+
+    test('never mentions the score, with and without errors', () async {
+      final withError = await template.generateYogaFeedback(
+        postureErrors: const [
+          PostureError(
+            code: 'left_arm_too_low',
+            message: 'Raise your left arm toward shoulder height.',
+            severity: PostureErrorSeverity.medium,
+            measuredValue: 50,
+            threshold: 75,
+          ),
+        ],
+        poseName: 'Warrior II',
+        score: 42,
+      );
+      final withoutError = await template.generateYogaFeedback(
+        postureErrors: const [],
+        poseName: 'Cobra',
+        score: 97,
+      );
+
+      for (final feedback in [withError, withoutError]) {
+        expect(feedback.recommendation.toLowerCase(), isNot(contains('score')));
+        expect(feedback.recommendation, isNot(contains('42')));
+        expect(feedback.recommendation, isNot(contains('97')));
+      }
       expect(
-        feedback.recommendation,
-        'Step into a wide stance, raise both arms, bend your front knee, and gaze over your front hand.',
+        withError.recommendation,
+        'Raise your left arm toward shoulder height and broaden across the chest.',
       );
     });
   });
@@ -198,14 +246,6 @@ class _RecordingLlmFeedbackService implements LlmFeedbackService {
     required List<PostureError> postureErrors,
     required String poseName,
     required int score,
-  }) async {
-    callCount += 1;
-    return feedback;
-  }
-
-  @override
-  Future<YogaFeedback> generatePoseSetupInstruction({
-    required String poseName,
   }) async {
     callCount += 1;
     return feedback;

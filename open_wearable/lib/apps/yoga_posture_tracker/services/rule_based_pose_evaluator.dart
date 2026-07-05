@@ -217,7 +217,8 @@ class RuleBasedPoseEvaluator {
           PostureError(
             code: 'chair_left_arm_too_low',
             message: 'Raise your left arm further overhead.',
-            severity: leftArm.elevationDegrees < 130
+            severity: leftArm.elevationDegrees <
+                    YogaPostureTrackerThresholds.overheadArmSevereLowDegrees
                 ? PostureErrorSeverity.severe
                 : PostureErrorSeverity.medium,
             measuredValue: leftArm.elevationDegrees,
@@ -241,7 +242,8 @@ class RuleBasedPoseEvaluator {
           PostureError(
             code: 'chair_right_arm_too_low',
             message: 'Raise your right arm further overhead.',
-            severity: rightArm.elevationDegrees < 130
+            severity: rightArm.elevationDegrees <
+                    YogaPostureTrackerThresholds.overheadArmSevereLowDegrees
                 ? PostureErrorSeverity.severe
                 : PostureErrorSeverity.medium,
             measuredValue: rightArm.elevationDegrees,
@@ -351,7 +353,8 @@ class RuleBasedPoseEvaluator {
           PostureError(
             code: 'triangle_${upperArm.side}_upper_arm_too_low',
             message: 'Stretch your ${upperArm.side} upper arm further upward.',
-            severity: upperArm.elevationDegrees < 130
+            severity: upperArm.elevationDegrees <
+                    YogaPostureTrackerThresholds.overheadArmSevereLowDegrees
                 ? PostureErrorSeverity.severe
                 : PostureErrorSeverity.medium,
             measuredValue: upperArm.elevationDegrees,
@@ -375,7 +378,9 @@ class RuleBasedPoseEvaluator {
             code: 'triangle_${lowerArm.side}_lower_arm_too_high',
             message:
                 'Move your ${lowerArm.side} lower hand closer toward your leg or the floor.',
-            severity: lowerArm.elevationDegrees > 65
+            severity: lowerArm.elevationDegrees >
+                    YogaPostureTrackerThresholds
+                        .triangleLowerArmSevereHighDegrees
                 ? PostureErrorSeverity.severe
                 : PostureErrorSeverity.medium,
             measuredValue: lowerArm.elevationDegrees,
@@ -399,7 +404,8 @@ class RuleBasedPoseEvaluator {
           PostureError(
             code: 'triangle_arm_line_unclear',
             message: 'Stretch both arms in opposite directions.',
-            severity: armLineDifference < 110
+            severity: armLineDifference <
+                    YogaPostureTrackerThresholds.triangleArmLineSevereDegrees
                 ? PostureErrorSeverity.severe
                 : PostureErrorSeverity.medium,
             measuredValue: armLineDifference,
@@ -468,9 +474,13 @@ class RuleBasedPoseEvaluator {
 
     final headDelta = _headDelta(calibration, poseWindow);
     if (headDelta != null) {
-      // This is an accelerometer-based head tilt proxy. It cannot directly
-      // measure chest lift, spinal extension, or shoulder alignment.
-      final headLift = headDelta.pitch.abs();
+      // Accelerometer-based head tilt proxy. It cannot measure chest lift,
+      // spinal extension, or shoulder alignment. Classification uses the
+      // magnitude; the signed pitch is preserved in the reported errors
+      // because the physical sign convention still needs validation on the
+      // real OpenEarable.
+      final headLiftSigned = headDelta.pitch;
+      final headLift = headLiftSigned.abs();
       earnedScore += _rangeScore(
         value: headLift,
         perfectMin: YogaPostureTrackerThresholds.cobraHeadLiftPerfectMinDegrees,
@@ -485,7 +495,7 @@ class RuleBasedPoseEvaluator {
             code: 'cobra_head_not_lifted',
             message: 'Lift your head and chest slightly more.',
             severity: PostureErrorSeverity.medium,
-            measuredValue: headLift,
+            measuredValue: headLiftSigned,
             threshold: YogaPostureTrackerThresholds.cobraHeadLiftGoodMinDegrees,
           ),
         );
@@ -496,7 +506,7 @@ class RuleBasedPoseEvaluator {
             code: 'cobra_head_overextended',
             message: 'Avoid pushing your head too far into the neck.',
             severity: PostureErrorSeverity.medium,
-            measuredValue: headLift,
+            measuredValue: headLiftSigned,
             threshold: YogaPostureTrackerThresholds.cobraHeadLiftGoodMaxDegrees,
           ),
         );
@@ -514,7 +524,8 @@ class RuleBasedPoseEvaluator {
           PostureError(
             code: 'cobra_head_tilted',
             message: 'Keep your head centered.',
-            severity: headRoll > 20
+            severity: headRoll >
+                    YogaPostureTrackerThresholds.cobraHeadRollSevereDegrees
                 ? PostureErrorSeverity.severe
                 : PostureErrorSeverity.medium,
             measuredValue: headRoll,
@@ -898,7 +909,7 @@ class RuleBasedPoseEvaluator {
           code: 'head_pitch_tilted',
           message:
               'Keep your head level instead of nodding up or down in Warrior II.',
-          severity: pitch > 20
+          severity: pitch > YogaPostureTrackerThresholds.headTiltSevereDegrees
               ? PostureErrorSeverity.severe
               : PostureErrorSeverity.medium,
           measuredValue: pitch,
@@ -911,7 +922,7 @@ class RuleBasedPoseEvaluator {
         PostureError(
           code: 'head_roll_tilted',
           message: 'Keep your head upright instead of tilting it to the side.',
-          severity: roll > 20
+          severity: roll > YogaPostureTrackerThresholds.headTiltSevereDegrees
               ? PostureErrorSeverity.severe
               : PostureErrorSeverity.medium,
           measuredValue: roll,
@@ -1071,7 +1082,8 @@ class RuleBasedPoseEvaluator {
         PostureError(
           code: errorCode,
           message: errorMessage,
-          severity: measuredValue > 30
+          severity: measuredValue >
+                  YogaPostureTrackerThresholds.genericHeadTiltSevereDegrees
               ? PostureErrorSeverity.severe
               : PostureErrorSeverity.medium,
           measuredValue: measuredValue,
@@ -1168,7 +1180,8 @@ class RuleBasedPoseEvaluator {
         PostureError(
           code: errorCode,
           message: errorMessage,
-          severity: difference > 20
+          severity: difference >
+                  YogaPostureTrackerThresholds.armHeightDifferenceSevereDegrees
               ? PostureErrorSeverity.severe
               : PostureErrorSeverity.medium,
           measuredValue: difference,
@@ -1357,7 +1370,8 @@ class RuleBasedPoseEvaluator {
         PostureError(
           code: '${side}_arm_too_low',
           message: 'Raise your $side arm toward shoulder height.',
-          severity: elevationDegrees < 70
+          severity: elevationDegrees <
+                  YogaPostureTrackerThresholds.armElevationSevereLowDegrees
               ? PostureErrorSeverity.severe
               : PostureErrorSeverity.medium,
           measuredValue: elevationDegrees,
@@ -1373,7 +1387,8 @@ class RuleBasedPoseEvaluator {
           code: '${side}_arm_too_high',
           message:
               'Your $side arm is above shoulder height. Lower it slightly and keep the shoulder relaxed.',
-          severity: elevationDegrees > 110
+          severity: elevationDegrees >
+                  YogaPostureTrackerThresholds.armElevationSevereHighDegrees
               ? PostureErrorSeverity.severe
               : PostureErrorSeverity.medium,
           measuredValue: elevationDegrees,
@@ -1446,7 +1461,8 @@ class RuleBasedPoseEvaluator {
           message: leftIsHigher
               ? 'Your left hand appears higher than your right. Lower the left side slightly.'
               : 'Your right hand appears higher than your left. Lower the right side slightly.',
-          severity: difference > 20
+          severity: difference >
+                  YogaPostureTrackerThresholds.armHeightDifferenceSevereDegrees
               ? PostureErrorSeverity.severe
               : PostureErrorSeverity.medium,
           measuredValue: difference,

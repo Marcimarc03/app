@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:open_earable_flutter/open_earable_flutter.dart';
+import 'package:open_wearable/apps/yoga_posture_tracker/model/trial_record.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/model/yoga_models.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/services/yoga_sensor_service.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/view_model/yoga_session_controller.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/widgets/pose_silhouette_feedback_view.dart';
@@ -113,7 +117,20 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
       YogaSessionPhase.idle || YogaSessionPhase.checkingDevices => _StartScreen(
           devices: devices,
           assignment: devices.ringAssignment,
+          capabilityIssues: _sensorService.capabilityIssues(devices),
           isBusy: controller.isBusy,
+          studyConfig: controller.studyConfig,
+          onStudyConfigChanged: (participantId, condition) {
+            if (participantId == null || condition == null) {
+              controller.disableStudyMode();
+            } else {
+              controller.configureStudyTrial(
+                participantId: participantId,
+                condition: condition,
+              );
+            }
+          },
+          onPlayTestSound: () => unawaited(controller.playTestSound()),
           onLeftChanged: (ringId) =>
               controller.updateRingAssignment(leftRingId: ringId),
           onRightChanged: (ringId) =>
@@ -142,14 +159,26 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
           onBeginCalibration: () =>
               unawaited(controller.beginCalibration(wearablesProvider)),
         ),
+      YogaSessionPhase.calibrationPreparing => _ProgressScreen(
+          title: 'Get ready',
+          icon: Icons.hourglass_top_rounded,
+          instruction:
+              'Move into the neutral position: stand upright, head straight, arms next to your body with palms facing inward. Recording has not started yet.',
+          remainingSeconds: controller.remainingSeconds,
+          totalSeconds:
+              YogaSessionController.calibrationPreparationDuration.inSeconds,
+          onStop: () =>
+              unawaited(controller.cancelActivePhase(wearablesProvider)),
+        ),
       YogaSessionPhase.calibrating => _ProgressScreen(
           title: 'Calibrating',
           icon: Icons.center_focus_strong_rounded,
           instruction:
-              'Stand upright, keep your head straight, place your arms next to your body with palms facing inward.',
+              'Hold completely still. The neutral baseline is being recorded.',
           remainingSeconds: controller.remainingSeconds,
           totalSeconds: YogaSessionController.calibrationDuration.inSeconds,
-          onStop: () => unawaited(controller.stopSession(wearablesProvider)),
+          onStop: () =>
+              unawaited(controller.cancelActivePhase(wearablesProvider)),
         ),
       YogaSessionPhase.poseInstructions => _PoseInstructionScreen(
           pose: controller.pose,
@@ -157,26 +186,40 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
           onBeginHold: () =>
               unawaited(controller.beginPoseHold(wearablesProvider)),
         ),
+      YogaSessionPhase.posePreparing => _ProgressScreen(
+          title: 'Move into ${controller.pose.name}',
+          icon: Icons.sports_gymnastics_rounded,
+          instruction:
+              '${controller.poseSetupInstruction} This time is not scored.',
+          remainingSeconds: controller.remainingSeconds,
+          totalSeconds: YogaSessionController.posePreparationDuration.inSeconds,
+          onStop: () =>
+              unawaited(controller.cancelActivePhase(wearablesProvider)),
+        ),
       YogaSessionPhase.holdingPose => _ProgressScreen(
           title: controller.pose.name,
           icon: Icons.self_improvement_rounded,
           instruction: controller.pose.instruction,
           remainingSeconds: controller.remainingSeconds,
           totalSeconds: YogaSessionController.holdDuration.inSeconds,
-          pose: controller.pose,
-          liveMarkerFeedback: controller.livePoseMarkerFeedback,
-          liveFeedback: controller.feedback,
+          pose: controller.showLiveFeedbackUi ? controller.pose : null,
+          liveMarkerFeedback: controller.showLiveFeedbackUi
+              ? controller.livePoseMarkerFeedback
+              : null,
+          liveFeedback:
+              controller.showLiveFeedbackUi ? controller.feedback : null,
           signalQuality: controller.latestSignalQuality,
-          onStop: () => unawaited(controller.stopSession(wearablesProvider)),
+          onStop: () =>
+              unawaited(controller.cancelActivePhase(wearablesProvider)),
         ),
-      YogaSessionPhase.evaluating ||
-      YogaSessionPhase.feedback =>
-        const _EvaluatingScreen(),
+      YogaSessionPhase.evaluating => const _EvaluatingScreen(),
       YogaSessionPhase.result => _ResultScreen(
           pose: controller.pose,
-          result: controller.evaluationResult,
+          summary: controller.holdSummary,
           feedback: controller.feedback,
           signalQuality: controller.latestSignalQuality,
+          isControlledTrial: controller.isControlledTrial,
+          trialRecords: controller.trialRecords,
           onRestart: () =>
               unawaited(controller.restartSession(wearablesProvider)),
           onDone: () => unawaited(controller.stopSession(wearablesProvider)),
@@ -275,7 +318,12 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
 class _StartScreen extends StatelessWidget {
   final YogaDeviceSet devices;
   final RingAssignment assignment;
+  final List<String> capabilityIssues;
   final bool isBusy;
+  final StudyTrialConfig? studyConfig;
+  final void Function(String? participantId, StudyCondition? condition)
+      onStudyConfigChanged;
+  final VoidCallback onPlayTestSound;
   final ValueChanged<String?> onLeftChanged;
   final ValueChanged<String?> onRightChanged;
   final VoidCallback onStart;
@@ -283,7 +331,11 @@ class _StartScreen extends StatelessWidget {
   const _StartScreen({
     required this.devices,
     required this.assignment,
+    required this.capabilityIssues,
     required this.isBusy,
+    required this.studyConfig,
+    required this.onStudyConfigChanged,
+    required this.onPlayTestSound,
     required this.onLeftChanged,
     required this.onRightChanged,
     required this.onStart,
@@ -301,7 +353,10 @@ class _StartScreen extends StatelessWidget {
           icon: Icons.self_improvement_rounded,
         ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
-        _DeviceStatusCard(devices: devices),
+        _DeviceStatusCard(
+          devices: devices,
+          capabilityIssues: capabilityIssues,
+        ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
         if (devices.hasTwoRings) ...[
           _InfoCard(
@@ -329,6 +384,30 @@ class _StartScreen extends StatelessWidget {
           ),
         ],
         const SizedBox(height: SensorPageSpacing.sectionGap),
+        _StudyModeCard(
+          studyConfig: studyConfig,
+          onChanged: onStudyConfigChanged,
+        ),
+        const SizedBox(height: SensorPageSpacing.sectionGap),
+        _InfoCard(
+          title: 'Audio check',
+          icon: Icons.volume_up_rounded,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Play a test tone before the trial to verify that audio reaches the intended output device.',
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: onPlayTestSound,
+                icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                label: const Text('Play test sound'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: SensorPageSpacing.sectionGap),
         SafeArea(
           top: false,
           child: SizedBox(
@@ -337,7 +416,8 @@ class _StartScreen extends StatelessWidget {
               onPressed: isBusy ||
                       !devices.hasEarable ||
                       !devices.hasTwoRings ||
-                      !assignment.isValid
+                      !assignment.isValid ||
+                      capabilityIssues.isNotEmpty
                   ? null
                   : onStart,
               child: PlatformText(isBusy ? 'Preparing...' : 'Start session'),
@@ -345,6 +425,114 @@ class _StartScreen extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _StudyModeCard extends StatefulWidget {
+  final StudyTrialConfig? studyConfig;
+  final void Function(String? participantId, StudyCondition? condition)
+      onChanged;
+
+  const _StudyModeCard({
+    required this.studyConfig,
+    required this.onChanged,
+  });
+
+  @override
+  State<_StudyModeCard> createState() => _StudyModeCardState();
+}
+
+class _StudyModeCardState extends State<_StudyModeCard> {
+  late final TextEditingController _participantIdController;
+  StudyCondition _condition = StudyCondition.noLiveCoaching;
+
+  bool get _enabled => widget.studyConfig != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _participantIdController = TextEditingController(
+      text: widget.studyConfig?.participantId ?? '',
+    );
+    _condition = widget.studyConfig?.condition ?? _condition;
+  }
+
+  @override
+  void dispose() {
+    _participantIdController.dispose();
+    super.dispose();
+  }
+
+  void _notify({required bool enabled}) {
+    if (!enabled || _participantIdController.text.trim().isEmpty) {
+      widget.onChanged(null, null);
+      return;
+    }
+    widget.onChanged(_participantIdController.text.trim(), _condition);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _ExpandableInfoCard(
+      title: 'Study mode (researcher)',
+      subtitle: _enabled
+          ? 'Controlled trial: ${widget.studyConfig!.participantId}, '
+              '${widget.studyConfig!.condition.label}'
+          : 'Off',
+      icon: Icons.science_rounded,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Controlled trial mode'),
+            value: _enabled,
+            onChanged: (value) => _notify(enabled: value),
+          ),
+          TextField(
+            controller: _participantIdController,
+            decoration: const InputDecoration(
+              labelText: 'Participant ID',
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (_) {
+              if (_enabled) {
+                _notify(enabled: true);
+              }
+            },
+          ),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<StudyCondition>(
+            initialValue: _condition,
+            decoration: const InputDecoration(
+              labelText: 'Condition',
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              for (final condition in StudyCondition.values)
+                DropdownMenuItem(
+                  value: condition,
+                  child: Text(condition.label),
+                ),
+            ],
+            onChanged: (condition) {
+              if (condition == null) {
+                return;
+              }
+              setState(() => _condition = condition);
+              if (_enabled) {
+                _notify(enabled: true);
+              }
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'In controlled trials the participant sees no live corrections, markers, or scores. Results stay in the researcher view.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1160,58 +1348,164 @@ class _EvaluatingScreen extends StatelessWidget {
 
 class _ResultScreen extends StatelessWidget {
   final YogaPose pose;
-  final PoseEvaluationResult? result;
+  final YogaHoldSummary? summary;
   final YogaFeedback? feedback;
   final SensorWindowQuality? signalQuality;
+  final bool isControlledTrial;
+  final List<TrialRecord> trialRecords;
   final VoidCallback onRestart;
   final VoidCallback onDone;
 
   const _ResultScreen({
     required this.pose,
-    required this.result,
+    required this.summary,
     required this.feedback,
     required this.signalQuality,
+    required this.isControlledTrial,
+    required this.trialRecords,
     required this.onRestart,
     required this.onDone,
   });
 
   @override
   Widget build(BuildContext context) {
-    final result = this.result;
-    final feedback = this.feedback;
-    final groupedErrors =
-        result == null ? null : _GroupedPostureErrors.from(result.errors);
-
+    // Participants in controlled trials never see scores or issues; the
+    // details stay collapsed inside the researcher view.
     return ListView(
       padding: SensorPageSpacing.pagePaddingWithBottomInset(context),
       children: [
-        _HeroCard(
-          title: result == null ? 'Session complete' : 'Score ${result.score}',
-          subtitle: feedback?.recommendation ?? 'No feedback generated.',
-          icon: Icons.insights_rounded,
-        ),
-        if (pose.id == warriorTwoPose.id) ...[
+        if (isControlledTrial) ...[
+          _HeroCard(
+            title: 'Trial complete',
+            subtitle: 'Thank you. Please continue with the study instructions.',
+            icon: Icons.check_circle_outline_rounded,
+          ),
           const SizedBox(height: SensorPageSpacing.sectionGap),
+          _ExpandableInfoCard(
+            title: 'Researcher view',
+            subtitle: 'Score, issues, and export',
+            icon: Icons.science_rounded,
+            child: _ResultDetails(
+              pose: pose,
+              summary: summary,
+              feedback: feedback,
+              signalQuality: signalQuality,
+              trialRecords: trialRecords,
+            ),
+          ),
+        ] else ...[
+          _HeroCard(
+            title: switch (summary) {
+              null => 'Session complete',
+              final s when !s.isValid => 'Trial invalid',
+              final s => 'Score ${s.evaluation!.score}',
+            },
+            subtitle: feedback?.recommendation ?? 'No feedback generated.',
+            icon: Icons.insights_rounded,
+          ),
+          const SizedBox(height: SensorPageSpacing.sectionGap),
+          _ResultDetails(
+            pose: pose,
+            summary: summary,
+            feedback: feedback,
+            signalQuality: signalQuality,
+            trialRecords: trialRecords,
+          ),
+        ],
+        const SizedBox(height: SensorPageSpacing.sectionGap),
+        SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              SizedBox(
+                width: double.infinity,
+                child: PlatformElevatedButton(
+                  onPressed: onRestart,
+                  child: PlatformText(
+                    isControlledTrial ? 'Next trial' : 'Restart session',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: PlatformTextButton(
+                  onPressed: onDone,
+                  child: PlatformText('Done'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ResultDetails extends StatelessWidget {
+  final YogaPose pose;
+  final YogaHoldSummary? summary;
+  final YogaFeedback? feedback;
+  final SensorWindowQuality? signalQuality;
+  final List<TrialRecord> trialRecords;
+
+  const _ResultDetails({
+    required this.pose,
+    required this.summary,
+    required this.feedback,
+    required this.signalQuality,
+    required this.trialRecords,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = this.summary;
+    final result = summary?.evaluation;
+    final groupedErrors =
+        result == null ? null : _GroupedPostureErrors.from(result.errors);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (summary != null) ...[
+          _InfoCard(
+            title: 'Trial validity',
+            icon: summary.isValid
+                ? Icons.verified_rounded
+                : Icons.report_problem_outlined,
+            child: Text(
+              summary.isValid
+                  ? '${summary.validWindowCount} of ${summary.windowCount} scoring windows were valid. Final score: ${result!.score}.'
+                  : 'Only ${summary.validWindowCount} of ${summary.windowCount} scoring windows were valid, so no score was computed. ${summary.invalidReason ?? ''}',
+            ),
+          ),
+          const SizedBox(height: SensorPageSpacing.sectionGap),
+        ],
+        if (pose.id == warriorTwoPose.id && result != null) ...[
           _InfoCard(
             title: 'Pose status',
             icon: Icons.accessibility_new_rounded,
             child: PoseSilhouetteFeedbackView(
               pose: pose,
-              markers: result?.markerFeedback ?? const [],
+              markers: result.markerFeedback,
               showLegend: true,
             ),
           ),
+          const SizedBox(height: SensorPageSpacing.sectionGap),
         ],
         if (signalQuality != null) ...[
-          const SizedBox(height: SensorPageSpacing.sectionGap),
           _SignalQualityCard(signalQuality: signalQuality!),
+          const SizedBox(height: SensorPageSpacing.sectionGap),
         ],
-        const SizedBox(height: SensorPageSpacing.sectionGap),
         if (result == null || result.errors.isEmpty)
           _InfoCard(
             title: 'Detected issues',
             icon: Icons.report_problem_outlined,
-            child: const Text('No posture issues detected for this MVP run.'),
+            child: Text(
+              result == null
+                  ? 'No scored windows are available for this trial.'
+                  : 'No posture issues detected.',
+            ),
           )
         else ...[
           _IssueGroupCard(
@@ -1244,42 +1538,78 @@ class _ResultScreen extends StatelessWidget {
           ],
         ],
         const SizedBox(height: SensorPageSpacing.sectionGap),
-        SafeArea(
-          top: false,
-          child: Column(
-            children: [
-              SizedBox(
-                width: double.infinity,
-                child: PlatformElevatedButton(
-                  onPressed: onRestart,
-                  child: PlatformText('Restart session'),
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: PlatformTextButton(
-                  onPressed: onDone,
-                  child: PlatformText('Done'),
-                ),
-              ),
-            ],
-          ),
-        ),
+        _TrialExportCard(trialRecords: trialRecords),
       ],
     );
   }
 }
 
-class _GroupedPostureErrors {
-  static const Set<String> _bothArmOrHandCodes = {
-    'chair_arms_uneven',
-    'chair_hands_asymmetric',
-    'triangle_arm_line_unclear',
-    'cobra_hands_asymmetric',
-    'cobra_unstable',
-  };
+class _TrialExportCard extends StatelessWidget {
+  final List<TrialRecord> trialRecords;
 
+  const _TrialExportCard({
+    required this.trialRecords,
+  });
+
+  Future<void> _shareExport(String content, String fileName) async {
+    final tempDir = await getTemporaryDirectory();
+    final file = File('${tempDir.path}/$fileName');
+    await file.writeAsString(content);
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(file.path)],
+        subject: 'Yoga Posture Tracker trial export',
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    return _InfoCard(
+      title: 'Trial export',
+      icon: Icons.file_download_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${trialRecords.length} trial record(s) in this session.',
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              OutlinedButton(
+                onPressed: trialRecords.isEmpty
+                    ? null
+                    : () => unawaited(
+                          _shareExport(
+                            '[${trialRecords.map((record) => record.toJsonString()).join(',\n')}]',
+                            'yoga_trials_$timestamp.json',
+                          ),
+                        ),
+                child: const Text('Export JSON'),
+              ),
+              OutlinedButton(
+                onPressed: trialRecords.isEmpty
+                    ? null
+                    : () => unawaited(
+                          _shareExport(
+                            TrialRecord.toCsv(trialRecords),
+                            'yoga_trials_$timestamp.csv',
+                          ),
+                        ),
+                child: const Text('Export CSV'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GroupedPostureErrors {
   final List<PostureError> leftArm;
   final List<PostureError> rightArm;
   final List<PostureError> bothArmsAndHands;
@@ -1344,13 +1674,14 @@ enum _PostureIssueArea {
     if (code.contains('head')) {
       return _PostureIssueArea.head;
     }
-    if (_GroupedPostureErrors._bothArmOrHandCodes.contains(code) ||
-        code.contains('arm') ||
+    if (code.contains('arm') ||
         code.contains('hand') ||
         code.contains('palm') ||
         code.contains('ring')) {
       return _PostureIssueArea.bothArmsAndHands;
     }
+    // Pose-level codes such as '*_unstable' and 'no_sensor_data' land here
+    // consistently for all poses.
     return _PostureIssueArea.other;
   }
 }
@@ -1378,6 +1709,12 @@ class _IssueGroupCard extends StatelessWidget {
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.priority_high_rounded),
                     title: Text(error.message),
+                    trailing: error.evaluatedWindowCount == null
+                        ? null
+                        : Text(
+                            '${error.occurrenceCount}/${error.evaluatedWindowCount} windows',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
                   ),
               ],
             ),
@@ -1387,14 +1724,17 @@ class _IssueGroupCard extends StatelessWidget {
 
 class _DeviceStatusCard extends StatelessWidget {
   final YogaDeviceSet devices;
+  final List<String> capabilityIssues;
 
   const _DeviceStatusCard({
     required this.devices,
+    this.capabilityIssues = const [],
   });
 
   @override
   Widget build(BuildContext context) {
-    final hasRequiredDevices = devices.hasEarable && devices.hasTwoRings;
+    final hasRequiredDevices =
+        devices.hasEarable && devices.hasTwoRings && capabilityIssues.isEmpty;
     final statusColor = hasRequiredDevices
         ? const Color(0xFF2E7D32)
         : Theme.of(context).colorScheme.error;
@@ -1422,11 +1762,17 @@ class _DeviceStatusCard extends StatelessWidget {
                     .join(', '),
             isOk: devices.rings.length >= 2,
           ),
+          for (final issue in capabilityIssues)
+            _DeviceStatusRow(
+              label: 'Capability',
+              value: issue,
+              isOk: false,
+            ),
           const SizedBox(height: 8),
           Text(
             hasRequiredDevices
                 ? 'Required setup detected. Assign the left and right rings before calibration.'
-                : 'Please connect one OpenEarable and two rings to start the Yoga Posture Tracker.',
+                : 'Please connect one OpenEarable and two rings with accelerometer and gyroscope to start the Yoga Posture Tracker.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: statusColor,
                   fontWeight: FontWeight.w600,

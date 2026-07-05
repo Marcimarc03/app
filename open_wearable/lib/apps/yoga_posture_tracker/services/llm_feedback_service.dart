@@ -10,10 +10,6 @@ abstract class LlmFeedbackService {
     required String poseName,
     required int score,
   });
-
-  Future<YogaFeedback> generatePoseSetupInstruction({
-    required String poseName,
-  });
 }
 
 class GeminiLlmFeedbackService implements LlmFeedbackService {
@@ -24,20 +20,26 @@ class GeminiLlmFeedbackService implements LlmFeedbackService {
     defaultValue: 'gemini-2.5-flash',
   );
   static const int _maxOutputTokens = 96;
+  static const Duration defaultRequestTimeout = Duration(seconds: 4);
+
+  static bool _loggedMissingApiKey = false;
 
   final LlmFeedbackService fallback;
   final http.Client _client;
   final String _apiKey;
   final String _model;
+  final Duration _requestTimeout;
 
   GeminiLlmFeedbackService({
     this.fallback = const TemplateLlmFeedbackService(),
     http.Client? client,
     String? apiKey,
     String? model,
+    Duration? requestTimeout,
   })  : _client = client ?? http.Client(),
         _apiKey = apiKey ?? _environmentApiKey,
-        _model = model ?? _environmentModel;
+        _model = model ?? _environmentModel,
+        _requestTimeout = requestTimeout ?? defaultRequestTimeout;
 
   bool get isConfigured => _apiKey.trim().isNotEmpty;
 
@@ -48,6 +50,12 @@ class GeminiLlmFeedbackService implements LlmFeedbackService {
     required int score,
   }) async {
     if (!isConfigured) {
+      if (!_loggedMissingApiKey) {
+        _loggedMissingApiKey = true;
+        logger.i(
+          'Gemini API key is not configured; yoga feedback uses templates.',
+        );
+      }
       return fallback.generateYogaFeedback(
         postureErrors: postureErrors,
         poseName: poseName,
@@ -58,7 +66,7 @@ class GeminiLlmFeedbackService implements LlmFeedbackService {
     try {
       final text = await _generateContent(
         systemInstruction:
-            'You are a calm, precise yoga instructor giving real-time spoken corrections during Warrior II. Return one complete TTS-ready sentence only.',
+            'You are a calm, precise yoga instructor giving real-time spoken corrections during $poseName. Return one complete TTS-ready sentence only.',
         prompt: _buildLiveFeedbackPrompt(
           postureErrors: postureErrors,
           poseName: poseName,
@@ -98,50 +106,6 @@ class GeminiLlmFeedbackService implements LlmFeedbackService {
     }
   }
 
-  @override
-  Future<YogaFeedback> generatePoseSetupInstruction({
-    required String poseName,
-  }) async {
-    if (!isConfigured) {
-      return fallback.generatePoseSetupInstruction(poseName: poseName);
-    }
-
-    try {
-      final text = await _generateContent(
-        systemInstruction:
-            'You are a calm yoga instructor giving a short spoken setup cue before a student enters a pose. Stay concrete, gentle, and concise.',
-        prompt: _buildPoseSetupPrompt(poseName),
-        temperature: 0.3,
-        maxOutputTokens: _maxOutputTokens,
-      );
-      final cue = text == null
-          ? null
-          : _completeSpokenCue(
-              text,
-              minimumWordCount: 8,
-            );
-      if (cue == null) {
-        logger.w(
-          'Gemini pose setup response was empty or incomplete: '
-          '${text ?? '<no text>'}',
-        );
-        return fallback.generatePoseSetupInstruction(poseName: poseName);
-      }
-
-      return YogaFeedback(
-        recommendation: cue,
-        generatedByLlm: true,
-      );
-    } catch (error, stackTrace) {
-      logger.w(
-        'Gemini pose setup failed, using template fallback.',
-        error: error,
-        stackTrace: stackTrace,
-      );
-      return fallback.generatePoseSetupInstruction(poseName: poseName);
-    }
-  }
-
   Future<String?> _generateContent({
     required String systemInstruction,
     required String prompt,
@@ -152,32 +116,37 @@ class GeminiLlmFeedbackService implements LlmFeedbackService {
       'generativelanguage.googleapis.com',
       '/v1beta/models/$_model:generateContent',
     );
-    final response = await _client.post(
-      uri,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': _apiKey,
-      },
-      body: jsonEncode({
-        'systemInstruction': {
-          'parts': [
-            {'text': systemInstruction},
-          ],
-        },
-        'contents': [
-          {
-            'role': 'user',
-            'parts': [
-              {'text': prompt},
-            ],
+    // A slow response is treated like a failure so a deterministic fallback
+    // cue can be spoken in time; the TimeoutException lands in the caller's
+    // catch block.
+    final response = await _client
+        .post(
+          uri,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': _apiKey,
           },
-        ],
-        'generationConfig': {
-          'temperature': temperature,
-          'maxOutputTokens': maxOutputTokens,
-        },
-      }),
-    );
+          body: jsonEncode({
+            'systemInstruction': {
+              'parts': [
+                {'text': systemInstruction},
+              ],
+            },
+            'contents': [
+              {
+                'role': 'user',
+                'parts': [
+                  {'text': prompt},
+                ],
+              },
+            ],
+            'generationConfig': {
+              'temperature': temperature,
+              'maxOutputTokens': maxOutputTokens,
+            },
+          }),
+        )
+        .timeout(_requestTimeout);
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       logger.w(
@@ -228,43 +197,6 @@ Constraints:
 - no markdown
 - no emojis
 - do not mention sensors, IMU, API, score, or device data
-''';
-  }
-
-  String _buildPoseSetupPrompt(String poseName) {
-    final poseSetupDetails = switch (poseName) {
-      'Warrior II' =>
-        'For Warrior II, cue a wide stance, arms at shoulder height, a softly bent front knee, long back leg, and gaze over the front hand.',
-      'Triangle' =>
-        'For Triangle, cue a wide stance, one hand reaching toward the front leg, the other arm upward, and a long controlled neck.',
-      'Chair' =>
-        'For Chair, cue bent knees, hips sitting back, lifted chest, and both arms reaching upward.',
-      'Cobra' =>
-        'For Cobra, cue hands beside the ribs, a gentle head and chest lift, relaxed shoulders, and steady hands.',
-      _ =>
-        'Cue the main setup points for the selected yoga pose using only observable, practical alignment language.',
-    };
-    return '''
-Pose: $poseName
-
-Give one short spoken instruction for entering and setting up this yoga pose before the timed hold starts.
-$poseSetupDetails
-
-Good example:
-"Step into a wide stance, raise your arms to shoulder height, bend your front knee softly, and gaze over your front hand."
-
-Bad examples:
-- "Warrior II setup"
-- "Take the pose"
-
-Constraints:
-- one complete sentence only
-- 16 to 32 words
-- end with a period
-- no markdown
-- no emojis
-- do not mention sensors, IMU, API, score, or device data
-- do not give medical advice
 ''';
   }
 
@@ -416,31 +348,8 @@ class TemplateLlmFeedbackService implements LlmFeedbackService {
       _ => '${primary.message} Repeat the hold calmly.',
     };
 
-    return YogaFeedback(
-      recommendation: '$cue Your current $poseName score is $score.',
-    );
-  }
-
-  @override
-  Future<YogaFeedback> generatePoseSetupInstruction({
-    required String poseName,
-  }) async {
-    if (poseName == warriorTwoPose.name) {
-      return YogaFeedback(recommendation: warriorTwoPose.instruction);
-    }
-    if (poseName == trianglePose.name) {
-      return YogaFeedback(recommendation: trianglePose.instruction);
-    }
-    if (poseName == chairPose.name) {
-      return YogaFeedback(recommendation: chairPose.instruction);
-    }
-    if (poseName == cobraPose.name) {
-      return YogaFeedback(recommendation: cobraPose.instruction);
-    }
-
-    return YogaFeedback(
-      recommendation:
-          'Set up $poseName with steady breath, clear alignment, and a calm gaze before starting the hold.',
-    );
+    // Fallback cues must stay content-equivalent to LLM cues, which are
+    // forbidden from mentioning scores or sensors.
+    return YogaFeedback(recommendation: cue);
   }
 }

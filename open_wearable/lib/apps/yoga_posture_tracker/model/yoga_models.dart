@@ -7,12 +7,45 @@ enum YogaSessionPhase {
   checkingDevices,
   poseSelection,
   calibrationInstructions,
+  calibrationPreparing,
   calibrating,
   poseInstructions,
+  posePreparing,
   holdingPose,
   evaluating,
-  feedback,
   result,
+}
+
+enum StudyCondition {
+  noLiveCoaching('No live coaching'),
+  llmLiveCoaching('LLM live coaching');
+
+  final String label;
+
+  const StudyCondition(this.label);
+}
+
+/// Researcher-provided configuration for one controlled study trial.
+class StudyTrialConfig {
+  final String participantId;
+  final StudyCondition condition;
+  final int trialOrder;
+
+  const StudyTrialConfig({
+    required this.participantId,
+    required this.condition,
+    required this.trialOrder,
+  });
+
+  String get trialId => '$participantId-T$trialOrder';
+
+  StudyTrialConfig copyWith({int? trialOrder}) {
+    return StudyTrialConfig(
+      participantId: participantId,
+      condition: condition,
+      trialOrder: trialOrder ?? this.trialOrder,
+    );
+  }
 }
 
 enum YogaPoseDifficulty {
@@ -344,14 +377,6 @@ class PostureError {
     this.occurrenceCount = 1,
     this.evaluatedWindowCount,
   });
-
-  int get scorePenalty {
-    return switch (severity) {
-      PostureErrorSeverity.minor => 10,
-      PostureErrorSeverity.medium => 20,
-      PostureErrorSeverity.severe => 30,
-    };
-  }
 }
 
 class PoseEvaluationResult {
@@ -366,6 +391,24 @@ class PoseEvaluationResult {
   });
 
   bool get hasErrors => errors.isNotEmpty;
+}
+
+/// Outcome of one 30-second hold. A trial without enough valid scoring
+/// windows carries no numerical score ([evaluation] is null).
+class YogaHoldSummary {
+  final PoseEvaluationResult? evaluation;
+  final int validWindowCount;
+  final int windowCount;
+  final String? invalidReason;
+
+  const YogaHoldSummary({
+    required this.evaluation,
+    required this.validWindowCount,
+    required this.windowCount,
+    this.invalidReason,
+  });
+
+  bool get isValid => evaluation != null;
 }
 
 enum PoseMarkerType {
@@ -454,6 +497,18 @@ class YogaPostureTrackerThresholds {
   static const double cobraHeadRollGoodDegrees = 14;
   static const double cobraHandSymmetryPerfectDegrees = 12;
   static const double cobraHandSymmetryGoodDegrees = 20;
+
+  // Cutoffs above/below which an error is reported as severe instead of
+  // medium. Kept together so the rule set stays documentable for the study.
+  static const double armElevationSevereLowDegrees = 70;
+  static const double armElevationSevereHighDegrees = 110;
+  static const double armHeightDifferenceSevereDegrees = 20;
+  static const double headTiltSevereDegrees = 20;
+  static const double genericHeadTiltSevereDegrees = 30;
+  static const double overheadArmSevereLowDegrees = 130;
+  static const double triangleLowerArmSevereHighDegrees = 65;
+  static const double triangleArmLineSevereDegrees = 110;
+  static const double cobraHeadRollSevereDegrees = 20;
 }
 
 const YogaPose warriorTwoPose = YogaPose(

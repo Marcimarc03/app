@@ -13,11 +13,6 @@ import 'package:open_wearable/view_models/wearables_provider.dart';
 class YogaSensorService {
   static const String defaultLeftRingName = 'OpenRing-6033F92';
   static const String defaultRightRingName = 'OpenRing-6036A35';
-  // Keep the visual markers responsive while still smoothing brief IMU jitter.
-  static const int _liveWindowSampleLimit = 12;
-  static const Duration _liveWindowMinimumEmitInterval = Duration(
-    milliseconds: 80,
-  );
 
   YogaDeviceSet resolveDevices(WearablesProvider wearablesProvider) {
     Wearable? earable;
@@ -100,27 +95,11 @@ class YogaSensorService {
   }) {
     final buffers = _YogaImuSampleBuffers.forDevices(devices);
     final subscriptions = <StreamSubscription<SensorValue>>[];
-    final liveWindowController = StreamController<SensorWindow>.broadcast();
-    var lastLiveWindowEmission = DateTime.fromMillisecondsSinceEpoch(0);
-
-    void emitLiveWindowIfReady() {
-      if (liveWindowController.isClosed || !liveWindowController.hasListener) {
-        return;
-      }
-      final now = DateTime.now();
-      if (now.difference(lastLiveWindowEmission) <
-          _liveWindowMinimumEmitInterval) {
-        return;
-      }
-      lastLiveWindowEmission = now;
-      liveWindowController.add(buffers.snapshotLiveWindow());
-    }
 
     void subscribe({
       required Wearable wearable,
       required Sensor sensor,
       required List<ImuSample> target,
-      required List<ImuSample> liveTarget,
     }) {
       subscriptions.add(
         SensorStreams.shared(wearable: wearable, sensor: sensor).listen(
@@ -137,11 +116,6 @@ class YogaSensorService {
               values: values,
             );
             target.add(sample);
-            buffers.appendLiveSample(
-              target: liveTarget,
-              sample: sample,
-            );
-            emitLiveWindowIfReady();
           },
         ),
       );
@@ -162,7 +136,6 @@ class YogaSensorService {
           wearable: earable,
           sensor: accelerometer,
           target: buffers.earableAccelerometer,
-          liveTarget: buffers.liveEarableAccelerometer,
         );
       }
       if (gyroscope != null) {
@@ -171,7 +144,6 @@ class YogaSensorService {
           wearable: earable,
           sensor: gyroscope,
           target: buffers.earableGyroscope,
-          liveTarget: buffers.liveEarableGyroscope,
         );
       }
     }
@@ -194,7 +166,6 @@ class YogaSensorService {
           wearable: ring,
           sensor: accelerometer,
           target: buffers.ringAccelerometers[ring.deviceId]!,
-          liveTarget: buffers.liveRingAccelerometers[ring.deviceId]!,
         );
       }
       if (gyroscope != null) {
@@ -203,7 +174,6 @@ class YogaSensorService {
           wearable: ring,
           sensor: gyroscope,
           target: buffers.ringGyroscopes[ring.deviceId]!,
-          liveTarget: buffers.liveRingGyroscopes[ring.deviceId]!,
         );
       }
     }
@@ -214,7 +184,6 @@ class YogaSensorService {
     return YogaImuStreamSession._(
       buffers: buffers,
       subscriptions: subscriptions,
-      liveWindowController: liveWindowController,
     );
   }
 
@@ -400,18 +369,13 @@ class YogaSensorService {
 class YogaImuStreamSession {
   final _YogaImuSampleBuffers _buffers;
   final List<StreamSubscription<SensorValue>> _subscriptions;
-  final StreamController<SensorWindow> _liveWindowController;
   bool _disposed = false;
 
   YogaImuStreamSession._({
     required _YogaImuSampleBuffers buffers,
     required List<StreamSubscription<SensorValue>> subscriptions,
-    required StreamController<SensorWindow> liveWindowController,
   })  : _buffers = buffers,
-        _subscriptions = subscriptions,
-        _liveWindowController = liveWindowController;
-
-  Stream<SensorWindow> get liveWindows => _liveWindowController.stream;
+        _subscriptions = subscriptions;
 
   SensorWindow drainWindow() {
     final window = _buffers.drainWindow();
@@ -429,7 +393,6 @@ class YogaImuStreamSession {
     for (final subscription in _subscriptions) {
       await subscription.cancel();
     }
-    await _liveWindowController.close();
     logger.i('Yoga continuous IMU stream stopped');
   }
 }
@@ -439,20 +402,12 @@ class _YogaImuSampleBuffers {
   final List<ImuSample> earableGyroscope;
   final Map<String, List<ImuSample>> ringAccelerometers;
   final Map<String, List<ImuSample>> ringGyroscopes;
-  final List<ImuSample> liveEarableAccelerometer;
-  final List<ImuSample> liveEarableGyroscope;
-  final Map<String, List<ImuSample>> liveRingAccelerometers;
-  final Map<String, List<ImuSample>> liveRingGyroscopes;
 
   _YogaImuSampleBuffers({
     required this.earableAccelerometer,
     required this.earableGyroscope,
     required this.ringAccelerometers,
     required this.ringGyroscopes,
-    required this.liveEarableAccelerometer,
-    required this.liveEarableGyroscope,
-    required this.liveRingAccelerometers,
-    required this.liveRingGyroscopes,
   });
 
   factory _YogaImuSampleBuffers.forDevices(YogaDeviceSet devices) {
@@ -464,44 +419,6 @@ class _YogaImuSampleBuffers {
       },
       ringGyroscopes: <String, List<ImuSample>>{
         for (final ring in devices.rings) ring.deviceId: <ImuSample>[],
-      },
-      liveEarableAccelerometer: <ImuSample>[],
-      liveEarableGyroscope: <ImuSample>[],
-      liveRingAccelerometers: <String, List<ImuSample>>{
-        for (final ring in devices.rings) ring.deviceId: <ImuSample>[],
-      },
-      liveRingGyroscopes: <String, List<ImuSample>>{
-        for (final ring in devices.rings) ring.deviceId: <ImuSample>[],
-      },
-    );
-  }
-
-  void appendLiveSample({
-    required List<ImuSample> target,
-    required ImuSample sample,
-  }) {
-    target.add(sample);
-    if (target.length > YogaSensorService._liveWindowSampleLimit) {
-      target.removeRange(
-        0,
-        target.length - YogaSensorService._liveWindowSampleLimit,
-      );
-    }
-  }
-
-  SensorWindow snapshotLiveWindow() {
-    return SensorWindow(
-      earableAccelerometerSamples: List<ImuSample>.of(
-        liveEarableAccelerometer,
-      ),
-      earableGyroscopeSamples: List<ImuSample>.of(liveEarableGyroscope),
-      ringAccelerometerSamplesByDeviceId: {
-        for (final entry in liveRingAccelerometers.entries)
-          entry.key: List<ImuSample>.of(entry.value),
-      },
-      ringGyroscopeSamplesByDeviceId: {
-        for (final entry in liveRingGyroscopes.entries)
-          entry.key: List<ImuSample>.of(entry.value),
       },
     );
   }

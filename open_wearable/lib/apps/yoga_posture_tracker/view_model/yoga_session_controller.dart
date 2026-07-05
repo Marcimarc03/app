@@ -16,14 +16,11 @@ class YogaSessionController with ChangeNotifier {
   /// Preparation before baseline recording; no sensor data is collected.
   static const Duration calibrationPreparationDuration = Duration(seconds: 5);
 
-  /// The final preparation seconds announced with countdown ticks.
-  static const int calibrationAnnouncedSeconds = 3;
-
   /// Still-baseline recording window.
   static const Duration calibrationDuration = Duration(seconds: 3);
 
   /// Unscored time to move into the pose before the scored hold starts.
-  static const Duration posePreparationDuration = Duration(seconds: 10);
+  static const Duration posePreparationDuration = Duration(seconds: 5);
 
   static const Duration scoringWindowDuration = Duration(seconds: 5);
   static const int scoringWindowCount = 6;
@@ -57,8 +54,6 @@ class YogaSessionController with ChangeNotifier {
   SensorWindowQuality? _latestSignalQuality;
   String? _calibrationWarning;
   List<String> _capabilityIssues = const [];
-  final ValueNotifier<List<PoseMarkerFeedback>> _livePoseMarkerFeedback =
-      ValueNotifier<List<PoseMarkerFeedback>>(const []);
   RingAssignment _ringAssignment = const RingAssignment();
   YogaPose _selectedPose = warriorTwoPose;
   int _remainingSeconds = 0;
@@ -67,7 +62,6 @@ class YogaSessionController with ChangeNotifier {
   bool _stopRequested = false;
   Completer<void>? _cancelCompleter;
 
-  StudyTrialConfig? _studyConfig;
   int _trialCounter = 0;
   TrialRecordBuilder? _trialBuilder;
   final List<TrialRecord> _trialRecords = [];
@@ -76,6 +70,8 @@ class YogaSessionController with ChangeNotifier {
   String _appVersion = 'unknown';
   Future<bool>? _setupSpeech;
   int _completedWindowCount = 0;
+  bool _isLlmCheckRunning = false;
+  LlmConnectionCheck? _llmConnectionCheck;
 
   YogaSessionController({
     YogaSensorService? sensorService,
@@ -101,25 +97,14 @@ class YogaSessionController with ChangeNotifier {
   SensorWindowQuality? get latestSignalQuality => _latestSignalQuality;
   String? get calibrationWarning => _calibrationWarning;
   List<String> get capabilityIssues => _capabilityIssues;
-  ValueListenable<List<PoseMarkerFeedback>> get livePoseMarkerFeedback =>
-      _livePoseMarkerFeedback;
   RingAssignment get ringAssignment => _ringAssignment;
   int get remainingSeconds => _remainingSeconds;
   YogaPose get pose => _selectedPose;
   List<YogaPose> get availablePoses => yogaPostureTrackerPoses;
   String get poseSetupInstruction => pose.instruction;
-  StudyTrialConfig? get studyConfig => _studyConfig;
-  bool get isControlledTrial => _studyConfig != null;
   List<TrialRecord> get trialRecords => List.unmodifiable(_trialRecords);
-
-  /// Live coaching is disabled in the noLiveCoaching study condition.
-  bool get liveCoachingEnabled =>
-      _studyConfig == null ||
-      _studyConfig!.condition == StudyCondition.llmLiveCoaching;
-
-  /// Live correction text and marker overlays are hidden in controlled
-  /// trials for both conditions; llmLiveCoaching keeps spoken cues only.
-  bool get showLiveFeedbackUi => !isControlledTrial;
+  bool get isLlmCheckRunning => _isLlmCheckRunning;
+  LlmConnectionCheck? get llmConnectionCheck => _llmConnectionCheck;
 
   bool get isBusy {
     return switch (_phase) {
@@ -147,25 +132,21 @@ class YogaSessionController with ChangeNotifier {
     _notifyListeners();
   }
 
-  void configureStudyTrial({
-    required String participantId,
-    required StudyCondition condition,
-  }) {
-    _studyConfig = StudyTrialConfig(
-      participantId: participantId.trim(),
-      condition: condition,
-      trialOrder: 0,
-    );
+  Future<void> checkLlmConnection() async {
+    if (_isLlmCheckRunning) {
+      return;
+    }
+    _isLlmCheckRunning = true;
+    _llmConnectionCheck = null;
     _notifyListeners();
-  }
-
-  void disableStudyMode() {
-    _studyConfig = null;
-    _notifyListeners();
-  }
-
-  Future<void> playTestSound() {
-    return _countdownSoundService.playCalibrationComplete();
+    try {
+      final result = await _llmFeedbackService.checkConnection();
+      _llmConnectionCheck = result;
+      await _ttsFeedbackService.speak(result.message);
+    } finally {
+      _isLlmCheckRunning = false;
+      _notifyListeners();
+    }
   }
 
   Future<void> startSession(
@@ -179,7 +160,6 @@ class YogaSessionController with ChangeNotifier {
     _feedback = null;
     _latestSignalQuality = null;
     _calibrationWarning = null;
-    _setLivePoseMarkerFeedback(const []);
     _setPhase(YogaSessionPhase.checkingDevices);
     _devices = _sensorService.resolveDevices(wearablesProvider);
     _ringAssignment = _ringAssignmentForDevices(
@@ -209,7 +189,6 @@ class YogaSessionController with ChangeNotifier {
     _feedback = null;
     _latestSignalQuality = null;
     _calibrationWarning = null;
-    _setLivePoseMarkerFeedback(const []);
     _remainingSeconds = 0;
     _trialCounter += 1;
     _trialBuilder = _newTrialBuilder();
@@ -250,14 +229,12 @@ class YogaSessionController with ChangeNotifier {
     _trialBuilder ??= _newTrialBuilder();
     _calibrationWarning = null;
 
-    // Preparation without recording; the final seconds are announced.
+    // Preparation without recording or audio cues.
     _setPhase(YogaSessionPhase.calibrationPreparing);
     logger.i('Yoga calibration preparation start');
     final prepared = await _countDown(
       calibrationPreparationDuration,
       generation: generation,
-      tickFromSecond: calibrationAnnouncedSeconds,
-      tickPhase: YogaSessionPhase.calibrationPreparing,
     );
     if (!prepared || !_isOperationActive(generation)) {
       return;
@@ -363,11 +340,6 @@ class YogaSessionController with ChangeNotifier {
       devices: _devices,
       wearablesProvider: wearablesProvider,
     );
-    final liveMarkerSubscription = _startLivePoseMarkerFeedbackUpdates(
-      generation: generation,
-      calibration: calibrationData,
-      poseStream: poseStream,
-    );
     final validResults = <PoseEvaluationResult>[];
     var liveFeedbackInFlight = false;
     var finalWindowMotivationSpoken = false;
@@ -419,12 +391,11 @@ class YogaSessionController with ChangeNotifier {
         _completedWindowCount = windowIndex + 1;
         _notifyListeners();
 
-        if (!liveCoachingEnabled) {
-          continue;
-        }
         final isEnteringFinalWindow = windowIndex == scoringWindowCount - 2;
         final isFinalWindow = windowIndex == scoringWindowCount - 1;
-        if (isEnteringFinalWindow && !finalWindowMotivationSpoken) {
+        if (isEnteringFinalWindow &&
+            !finalWindowMotivationSpoken &&
+            !liveFeedbackInFlight) {
           finalWindowMotivationSpoken = true;
           unawaited(_speakFinalWindowMotivation(generation));
         } else if (!isFinalWindow &&
@@ -445,12 +416,6 @@ class YogaSessionController with ChangeNotifier {
       }
       holdFinished = true;
     } finally {
-      // Broadcast-stream cancellation takes effect synchronously; awaiting
-      // its future would resume on the root zone and break fake_async tests.
-      if (liveMarkerSubscription != null) {
-        unawaited(liveMarkerSubscription.cancel());
-      }
-      _setLivePoseMarkerFeedback(const []);
       await poseStream.dispose();
       // Devices stop streaming right after the hold, also on cancellation.
       await _sensorService.turnOffYogaSensors(
@@ -574,31 +539,6 @@ class YogaSessionController with ChangeNotifier {
         _remainingSeconds <= scoringWindowDuration.inSeconds;
   }
 
-  StreamSubscription<SensorWindow>? _startLivePoseMarkerFeedbackUpdates({
-    required int generation,
-    required CalibrationData calibration,
-    required YogaImuStreamSession poseStream,
-  }) {
-    if (isControlledTrial || pose.id != warriorTwoPose.id) {
-      _setLivePoseMarkerFeedback(const []);
-      return null;
-    }
-
-    return poseStream.liveWindows.listen((poseWindow) {
-      if (!_isOperationActive(generation) ||
-          _phase != YogaSessionPhase.holdingPose) {
-        return;
-      }
-      _setLivePoseMarkerFeedback(
-        _poseEvaluator.evaluatePoseMarkers(
-          pose: pose,
-          calibration: calibration,
-          poseWindow: poseWindow,
-        ),
-      );
-    });
-  }
-
   Future<void> _speakFinalWindowMotivation(int generation) async {
     try {
       if (!_isOperationActive(generation) ||
@@ -654,7 +594,6 @@ class YogaSessionController with ChangeNotifier {
     _feedback = null;
     _latestSignalQuality = null;
     _calibrationWarning = null;
-    _setLivePoseMarkerFeedback(const []);
     // The ring assignment is deliberately kept across trials.
     await startSession(wearablesProvider);
   }
@@ -689,7 +628,6 @@ class YogaSessionController with ChangeNotifier {
     _feedback = null;
     _latestSignalQuality = null;
     _remainingSeconds = 0;
-    _setLivePoseMarkerFeedback(const []);
     _setPhase(YogaSessionPhase.calibrationInstructions);
   }
 
@@ -705,7 +643,6 @@ class YogaSessionController with ChangeNotifier {
     _abortTrialRecord('session_stopped');
     _remainingSeconds = 0;
     _latestSignalQuality = null;
-    _setLivePoseMarkerFeedback(const []);
     _setPhase(YogaSessionPhase.idle);
   }
 
@@ -727,14 +664,12 @@ class YogaSessionController with ChangeNotifier {
         _latestSignalQuality = null;
         _calibrationWarning = null;
         _remainingSeconds = 0;
-        _setLivePoseMarkerFeedback(const []);
         _setPhase(YogaSessionPhase.idle);
         return;
       case YogaSessionPhase.calibrationInstructions:
         _calibrationData = null;
         _calibrationWarning = null;
         _remainingSeconds = 0;
-        _setLivePoseMarkerFeedback(const []);
         _setPhase(YogaSessionPhase.poseSelection);
         return;
       case YogaSessionPhase.calibrationPreparing:
@@ -742,7 +677,6 @@ class YogaSessionController with ChangeNotifier {
         _startNewOperation();
         _calibrationData = null;
         _remainingSeconds = 0;
-        _setLivePoseMarkerFeedback(const []);
         await _stopFeedbackPlayback();
         await _stopCalibrationCountdownSound();
         _setPhase(YogaSessionPhase.calibrationInstructions);
@@ -750,7 +684,6 @@ class YogaSessionController with ChangeNotifier {
       case YogaSessionPhase.poseInstructions:
         _calibrationData = null;
         _remainingSeconds = 0;
-        _setLivePoseMarkerFeedback(const []);
         await _stopFeedbackPlayback();
         _setPhase(YogaSessionPhase.calibrationInstructions);
         return;
@@ -764,7 +697,6 @@ class YogaSessionController with ChangeNotifier {
         _holdSummary = null;
         _latestSignalQuality = null;
         _remainingSeconds = 0;
-        _setLivePoseMarkerFeedback(const []);
         await _stopFeedbackPlayback();
         _setPhase(YogaSessionPhase.poseSelection);
         return;
@@ -790,7 +722,7 @@ class YogaSessionController with ChangeNotifier {
       sessionId: _sessionId,
       appVersion: _appVersion,
       poseId: _selectedPose.id,
-      studyConfig: _studyConfig?.copyWith(trialOrder: _trialCounter),
+      trialOrder: _trialCounter,
     );
   }
 
@@ -952,12 +884,6 @@ class YogaSessionController with ChangeNotifier {
     );
   }
 
-  void _setLivePoseMarkerFeedback(List<PoseMarkerFeedback> markerFeedback) {
-    if (!_isDisposed) {
-      _livePoseMarkerFeedback.value = markerFeedback;
-    }
-  }
-
   void _notifyListeners() {
     if (!_isDisposed) {
       notifyListeners();
@@ -970,7 +896,6 @@ class YogaSessionController with ChangeNotifier {
     _requestStop();
     unawaited(_ttsFeedbackService.dispose());
     unawaited(_countdownSoundService.dispose());
-    _livePoseMarkerFeedback.dispose();
     super.dispose();
   }
 }

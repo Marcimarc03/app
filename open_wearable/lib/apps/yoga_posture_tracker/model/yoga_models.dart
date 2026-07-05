@@ -16,38 +16,6 @@ enum YogaSessionPhase {
   result,
 }
 
-enum StudyCondition {
-  noLiveCoaching('No live coaching'),
-  llmLiveCoaching('LLM live coaching');
-
-  final String label;
-
-  const StudyCondition(this.label);
-}
-
-/// Researcher-provided configuration for one controlled study trial.
-class StudyTrialConfig {
-  final String participantId;
-  final StudyCondition condition;
-  final int trialOrder;
-
-  const StudyTrialConfig({
-    required this.participantId,
-    required this.condition,
-    required this.trialOrder,
-  });
-
-  String get trialId => '$participantId-T$trialOrder';
-
-  StudyTrialConfig copyWith({int? trialOrder}) {
-    return StudyTrialConfig(
-      participantId: participantId,
-      condition: condition,
-      trialOrder: trialOrder ?? this.trialOrder,
-    );
-  }
-}
-
 enum YogaPoseDifficulty {
   beginner('Beginner', 1),
   intermediate('Intermediate', 2),
@@ -382,12 +350,10 @@ class PostureError {
 class PoseEvaluationResult {
   final int score;
   final List<PostureError> errors;
-  final List<PoseMarkerFeedback> markerFeedback;
 
   const PoseEvaluationResult({
     required this.score,
     required this.errors,
-    this.markerFeedback = const [],
   });
 
   bool get hasErrors => errors.isNotEmpty;
@@ -409,35 +375,6 @@ class YogaHoldSummary {
   });
 
   bool get isValid => evaluation != null;
-}
-
-enum PoseMarkerType {
-  head,
-  leftHand,
-  rightHand,
-}
-
-enum PoseMarkerStatus {
-  good,
-  warning,
-  bad,
-  noData,
-}
-
-class PoseMarkerFeedback {
-  final PoseMarkerType type;
-  final PoseMarkerStatus status;
-  final String? message;
-  final double? measuredValue;
-  final double? distanceFromTargetDegrees;
-
-  const PoseMarkerFeedback({
-    required this.type,
-    required this.status,
-    this.message,
-    this.measuredValue,
-    this.distanceFromTargetDegrees,
-  });
 }
 
 class YogaFeedback {

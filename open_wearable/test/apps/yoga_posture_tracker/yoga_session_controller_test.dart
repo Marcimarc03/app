@@ -89,6 +89,19 @@ void main() {
     });
   });
 
+  group('LLM connection check', () {
+    test('shows and speaks the LLM response', () async {
+      await controller.checkLlmConnection();
+
+      expect(controller.llmConnectionCheck?.isReachable, isTrue);
+      expect(
+        controller.llmConnectionCheck?.message,
+        'The yoga coach is online.',
+      );
+      expect(ttsService.spoken, ['The yoga coach is online.']);
+    });
+  });
+
   group('calibration', () {
     test('does not record during the 5s preparation, then records 3s', () {
       fakeAsync((async) {
@@ -111,8 +124,8 @@ void main() {
 
         async.elapse(const Duration(seconds: 4));
         expect(controller.phase, YogaSessionPhase.poseInstructions);
-        // 3 announced preparation seconds + 3 baseline seconds.
-        expect(soundService.tickCount, 6);
+        // Only the three recorded baseline seconds emit ticks.
+        expect(soundService.tickCount, 3);
         expect(soundService.completeCount, 1);
       });
     });
@@ -148,7 +161,7 @@ void main() {
   });
 
   group('pose hold', () {
-    test('runs an unscored 10s preparation before six 5s scored windows', () {
+    test('runs an unscored 5s preparation before six 5s scored windows', () {
       fakeAsync((async) {
         startAndSelectPose(async);
         calibrate(async);
@@ -157,7 +170,7 @@ void main() {
         async.flushMicrotasks();
         expect(controller.phase, YogaSessionPhase.posePreparing);
 
-        async.elapse(const Duration(seconds: 9));
+        async.elapse(const Duration(seconds: 4));
         expect(controller.phase, YogaSessionPhase.posePreparing);
         expect(
           sensorService.streamSessions,
@@ -346,7 +359,7 @@ void main() {
     });
   });
 
-  group('study conditions', () {
+  group('live coaching', () {
     void runFullTrial(FakeAsync async) {
       startAndSelectPose(async);
       calibrate(async);
@@ -356,32 +369,7 @@ void main() {
       expect(controller.phase, YogaSessionPhase.result);
     }
 
-    test('noLiveCoaching speaks only the setup instruction', () {
-      controller.configureStudyTrial(
-        participantId: 'P01',
-        condition: StudyCondition.noLiveCoaching,
-      );
-      fakeAsync((async) {
-        runFullTrial(async);
-
-        expect(ttsService.spoken, [warriorTwoPose.instruction]);
-        // Only the final feedback request reaches the LLM service.
-        expect(llmService.calls, hasLength(1));
-        expect(controller.livePoseMarkerFeedback.value, isEmpty);
-
-        final record = controller.trialRecords.single;
-        expect(record.participantId, 'P01');
-        expect(record.condition, 'noLiveCoaching');
-        expect(record.trialOrder, 1);
-        expect(record.completionStatus, 'completed');
-      });
-    });
-
-    test('llmLiveCoaching speaks live cues but hides live UI', () {
-      controller.configureStudyTrial(
-        participantId: 'P02',
-        condition: StudyCondition.llmLiveCoaching,
-      );
+    test('speaks setup and live LLM cues', () {
       fakeAsync((async) {
         runFullTrial(async);
 
@@ -390,8 +378,9 @@ void main() {
           ttsService.spoken.where((text) => text.contains('Fake cue')),
           isNotEmpty,
         );
-        expect(controller.showLiveFeedbackUi, isFalse);
-        expect(controller.livePoseMarkerFeedback.value, isEmpty);
+        final record = controller.trialRecords.single;
+        expect(record.trialOrder, 1);
+        expect(record.completionStatus, 'completed');
       });
     });
   });
@@ -440,11 +429,7 @@ void main() {
   });
 
   group('repeated trials integration', () {
-    test('two controlled trials share the assignment and export records', () {
-      controller.configureStudyTrial(
-        participantId: 'P03',
-        condition: StudyCondition.llmLiveCoaching,
-      );
+    test('two trials share the assignment and export records', () {
       fakeAsync((async) {
         unawaited(controller.startSession(provider));
         async.flushMicrotasks();
@@ -476,12 +461,6 @@ void main() {
         final orders =
             controller.trialRecords.map((record) => record.trialOrder);
         expect(orders, [1, 2]);
-        expect(
-          controller.trialRecords.every(
-            (record) => record.participantId == 'P03',
-          ),
-          isTrue,
-        );
         expect(
           controller.trialRecords.every(
             (record) => record.phaseTimestamps
@@ -561,15 +540,10 @@ SensorWindow _neutralBaseline() {
 
 class _FakeImuStreamSession implements YogaImuStreamSession {
   final List<SensorWindow> windows;
-  final StreamController<SensorWindow> _liveController =
-      StreamController<SensorWindow>.broadcast();
   int drainCount = 0;
   bool disposed = false;
 
   _FakeImuStreamSession(this.windows);
-
-  @override
-  Stream<SensorWindow> get liveWindows => _liveController.stream;
 
   @override
   SensorWindow drainWindow() {
@@ -585,7 +559,6 @@ class _FakeImuStreamSession implements YogaImuStreamSession {
   @override
   Future<void> dispose() async {
     disposed = true;
-    unawaited(_liveController.close());
   }
 }
 
@@ -671,6 +644,14 @@ class _FakeSensorService implements YogaSensorService {
 class _FakeLlmService implements LlmFeedbackService {
   final List<String> calls = [];
   Duration delay = Duration.zero;
+
+  @override
+  Future<LlmConnectionCheck> checkConnection() async {
+    return const LlmConnectionCheck(
+      isReachable: true,
+      message: 'The yoga coach is online.',
+    );
+  }
 
   @override
   Future<YogaFeedback> generateYogaFeedback({

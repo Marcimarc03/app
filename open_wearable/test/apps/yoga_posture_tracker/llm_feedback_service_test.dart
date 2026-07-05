@@ -14,6 +14,53 @@ void main() {
   });
 
   group('GeminiLlmFeedbackService', () {
+    test('checks connectivity by sending Hello and returns one sentence',
+        () async {
+      final service = GeminiLlmFeedbackService(
+        apiKey: 'test-key',
+        client: MockClient((request) async {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          final contents = body['contents'] as List<dynamic>;
+          final content = contents.single as Map<String, dynamic>;
+          final parts = content['parts'] as List<dynamic>;
+          expect((parts.single as Map<String, dynamic>)['text'], 'Hello');
+          return http.Response(
+            jsonEncode({
+              'candidates': [
+                {
+                  'content': {
+                    'parts': [
+                      {'text': 'Hello, the yoga coach is ready.'},
+                    ],
+                  },
+                },
+              ],
+            }),
+            200,
+          );
+        }),
+      );
+
+      final result = await service.checkConnection();
+
+      expect(result.isReachable, isTrue);
+      expect(result.message, 'Hello, the yoga coach is ready.');
+    });
+
+    test('reports unreachable when no API key is configured', () async {
+      final service = GeminiLlmFeedbackService(
+        apiKey: '',
+        client: MockClient((request) async {
+          fail('The API must not be called without a key.');
+        }),
+      );
+
+      final result = await service.checkConnection();
+
+      expect(result.isReachable, isFalse);
+      expect(result.message, LlmConnectionCheck.unreachableMessage);
+    });
+
     test('normalizes a complete Gemini cue for spoken feedback', () async {
       final service = GeminiLlmFeedbackService(
         apiKey: 'test-key',
@@ -240,6 +287,14 @@ class _RecordingLlmFeedbackService implements LlmFeedbackService {
   var callCount = 0;
 
   _RecordingLlmFeedbackService(this.feedback);
+
+  @override
+  Future<LlmConnectionCheck> checkConnection() async {
+    return const LlmConnectionCheck(
+      isReachable: false,
+      message: LlmConnectionCheck.unreachableMessage,
+    );
+  }
 
   @override
   Future<YogaFeedback> generateYogaFeedback({

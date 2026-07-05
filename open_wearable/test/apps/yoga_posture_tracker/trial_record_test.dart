@@ -11,15 +11,11 @@ void main() {
         sessionId: 'session-1',
         appVersion: '1.2.0+1',
         poseId: 'chair',
-        studyConfig: const StudyTrialConfig(
-          participantId: 'P07',
-          condition: StudyCondition.llmLiveCoaching,
-          trialOrder: 2,
-        ),
+        trialOrder: 2,
       );
     }
 
-    test('builds a complete record with study metadata', () {
+    test('builds a complete record with session metadata', () {
       final builder = newBuilder()
         ..markPhase(YogaSessionPhase.holdingPose)
         ..recordCalibrationAttempt(
@@ -47,10 +43,7 @@ void main() {
 
       final record = builder.build();
 
-      expect(record.participantId, 'P07');
-      expect(record.trialId, 'P07-T2');
       expect(record.trialOrder, 2);
-      expect(record.condition, 'llmLiveCoaching');
       expect(record.poseId, 'chair');
       expect(record.calibrationAttempts, 1);
       expect(record.calibrationValid, isTrue);
@@ -64,32 +57,15 @@ void main() {
         contains(YogaSessionPhase.holdingPose.name),
       );
     });
-
-    test('a free-mode record carries no participant information', () {
-      final record = TrialRecordBuilder(
-        sessionId: 'session-2',
-        appVersion: 'unknown',
-        poseId: 'cobra',
-        studyConfig: null,
-      ).build();
-
-      expect(record.participantId, isNull);
-      expect(record.trialId, isNull);
-      expect(record.condition, 'free');
-    });
   });
 
   group('TrialRecord export', () {
     TrialRecord buildRecord() {
       return (TrialRecordBuilder(
-        sessionId: 's',
+        sessionId: 's, "1"',
         appVersion: 'v',
         poseId: 'warrior_ii',
-        studyConfig: const StudyTrialConfig(
-          participantId: 'P, "1"',
-          condition: StudyCondition.noLiveCoaching,
-          trialOrder: 1,
-        ),
+        trialOrder: 1,
       )
             ..recordWindow(
               index: 0,
@@ -119,10 +95,10 @@ void main() {
       expect(lines, hasLength(2));
       expect(
         lines.first.split(',').length,
-        // The escaped participant ID contains commas only inside quotes.
+        // The escaped session ID contains commas only inside quotes.
         lines.last.split(RegExp(r',(?=(?:[^"]*"[^"]*")*[^"]*$)')).length,
       );
-      expect(lines.last, contains('"P, ""1"""'));
+      expect(lines.last, contains('"s, ""1"""'));
     });
   });
 }

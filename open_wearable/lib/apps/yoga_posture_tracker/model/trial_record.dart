@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:open_wearable/apps/yoga_posture_tracker/model/yoga_models.dart';
 
-/// One scoring window inside a hold, as recorded for the study export.
+/// One scoring window inside a hold, as recorded for session export.
 class TrialWindowRecord {
   final int index;
   final bool isValid;
@@ -58,17 +58,11 @@ class TrialFeedbackEvent {
   }
 }
 
-/// Structured record of one yoga trial for the user study.
-///
-/// Contains no API keys and no personal information beyond the
-/// researcher-assigned participant ID.
+/// Structured record of one yoga trial without personal information.
 class TrialRecord {
   final String sessionId;
   final String appVersion;
-  final String? participantId;
-  final String? trialId;
-  final int? trialOrder;
-  final String condition;
+  final int trialOrder;
   final String poseId;
   final Map<String, String> phaseTimestamps;
   final int calibrationAttempts;
@@ -87,10 +81,7 @@ class TrialRecord {
   const TrialRecord({
     required this.sessionId,
     required this.appVersion,
-    required this.participantId,
-    required this.trialId,
     required this.trialOrder,
-    required this.condition,
     required this.poseId,
     required this.phaseTimestamps,
     required this.calibrationAttempts,
@@ -109,10 +100,7 @@ class TrialRecord {
     return {
       'sessionId': sessionId,
       'appVersion': appVersion,
-      'participantId': participantId,
-      'trialId': trialId,
       'trialOrder': trialOrder,
-      'condition': condition,
       'poseId': poseId,
       'phaseTimestamps': phaseTimestamps,
       'calibrationAttempts': calibrationAttempts,
@@ -144,8 +132,8 @@ class TrialRecord {
   }
 
   static const String csvHeader =
-      'sessionId,appVersion,participantId,trialId,trialOrder,condition,'
-      'poseId,completionStatus,cancellationReason,calibrationAttempts,'
+      'sessionId,appVersion,trialOrder,poseId,completionStatus,'
+      'cancellationReason,calibrationAttempts,'
       'calibrationValid,windowCount,validWindowCount,finalScore,'
       'windowScores,errorCodes,holdStartedAt,resultAt';
 
@@ -153,10 +141,7 @@ class TrialRecord {
     final fields = [
       sessionId,
       appVersion,
-      participantId ?? '',
-      trialId ?? '',
-      trialOrder?.toString() ?? '',
-      condition,
+      trialOrder.toString(),
       poseId,
       completionStatus,
       cancellationReason ?? '',
@@ -195,7 +180,7 @@ class TrialRecordBuilder {
   final String sessionId;
   final String appVersion;
   final String poseId;
-  final StudyTrialConfig? studyConfig;
+  final int trialOrder;
   final Map<String, String> phaseTimestamps = {};
   final Map<String, int> calibrationSampleCounts = {};
   final List<TrialWindowRecord> windows = [];
@@ -211,7 +196,7 @@ class TrialRecordBuilder {
     required this.sessionId,
     required this.appVersion,
     required this.poseId,
-    required this.studyConfig,
+    required this.trialOrder,
   });
 
   void markPhase(YogaSessionPhase phase) {
@@ -274,10 +259,7 @@ class TrialRecordBuilder {
     return TrialRecord(
       sessionId: sessionId,
       appVersion: appVersion,
-      participantId: studyConfig?.participantId,
-      trialId: studyConfig?.trialId,
-      trialOrder: studyConfig?.trialOrder,
-      condition: studyConfig?.condition.name ?? 'free',
+      trialOrder: trialOrder,
       poseId: poseId,
       phaseTimestamps: Map.of(phaseTimestamps),
       calibrationAttempts: calibrationAttempts,

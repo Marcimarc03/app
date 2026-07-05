@@ -4,12 +4,26 @@ import 'package:open_wearable/apps/yoga_posture_tracker/model/yoga_models.dart';
 import 'package:open_wearable/models/logger.dart';
 import 'package:http/http.dart' as http;
 
+class LlmConnectionCheck {
+  static const String unreachableMessage = 'The LLM is not reachable.';
+
+  final bool isReachable;
+  final String message;
+
+  const LlmConnectionCheck({
+    required this.isReachable,
+    required this.message,
+  });
+}
+
 abstract class LlmFeedbackService {
   Future<YogaFeedback> generateYogaFeedback({
     required List<PostureError> postureErrors,
     required String poseName,
     required int score,
   });
+
+  Future<LlmConnectionCheck> checkConnection();
 }
 
 class GeminiLlmFeedbackService implements LlmFeedbackService {
@@ -42,6 +56,45 @@ class GeminiLlmFeedbackService implements LlmFeedbackService {
         _requestTimeout = requestTimeout ?? defaultRequestTimeout;
 
   bool get isConfigured => _apiKey.trim().isNotEmpty;
+
+  @override
+  Future<LlmConnectionCheck> checkConnection() async {
+    if (!isConfigured) {
+      return const LlmConnectionCheck(
+        isReachable: false,
+        message: LlmConnectionCheck.unreachableMessage,
+      );
+    }
+
+    try {
+      final text = await _generateContent(
+        systemInstruction:
+            'Reply with one short, friendly sentence confirming that the yoga coach is available.',
+        prompt: 'Hello',
+        temperature: 0,
+        maxOutputTokens: 32,
+      );
+      final response =
+          text == null ? null : _completeSpokenCue(text, minimumWordCount: 3);
+      if (response == null) {
+        return const LlmConnectionCheck(
+          isReachable: false,
+          message: LlmConnectionCheck.unreachableMessage,
+        );
+      }
+      return LlmConnectionCheck(isReachable: true, message: response);
+    } catch (error, stackTrace) {
+      logger.w(
+        'Gemini connection check failed.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return const LlmConnectionCheck(
+        isReachable: false,
+        message: LlmConnectionCheck.unreachableMessage,
+      );
+    }
+  }
 
   @override
   Future<YogaFeedback> generateYogaFeedback({
@@ -264,6 +317,14 @@ Constraints:
 
 class TemplateLlmFeedbackService implements LlmFeedbackService {
   const TemplateLlmFeedbackService();
+
+  @override
+  Future<LlmConnectionCheck> checkConnection() async {
+    return const LlmConnectionCheck(
+      isReachable: false,
+      message: LlmConnectionCheck.unreachableMessage,
+    );
+  }
 
   @override
   Future<YogaFeedback> generateYogaFeedback({

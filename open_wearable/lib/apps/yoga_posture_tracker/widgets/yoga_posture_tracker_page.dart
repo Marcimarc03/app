@@ -11,7 +11,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/services/yoga_sensor_service.dart';
 import 'package:open_wearable/apps/yoga_posture_tracker/view_model/yoga_session_controller.dart';
-import 'package:open_wearable/apps/yoga_posture_tracker/widgets/pose_silhouette_feedback_view.dart';
 import 'package:open_wearable/models/device_name_formatter.dart';
 import 'package:open_wearable/view_models/wearables_provider.dart';
 import 'package:open_wearable/widgets/sensors/sensor_page_spacing.dart';
@@ -119,18 +118,10 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
           assignment: devices.ringAssignment,
           capabilityIssues: _sensorService.capabilityIssues(devices),
           isBusy: controller.isBusy,
-          studyConfig: controller.studyConfig,
-          onStudyConfigChanged: (participantId, condition) {
-            if (participantId == null || condition == null) {
-              controller.disableStudyMode();
-            } else {
-              controller.configureStudyTrial(
-                participantId: participantId,
-                condition: condition,
-              );
-            }
-          },
-          onPlayTestSound: () => unawaited(controller.playTestSound()),
+          isLlmCheckRunning: controller.isLlmCheckRunning,
+          llmCheckMessage: controller.llmConnectionCheck?.message,
+          llmCheckSucceeded: controller.llmConnectionCheck?.isReachable,
+          onCheckLlm: () => unawaited(controller.checkLlmConnection()),
           onLeftChanged: (ringId) =>
               controller.updateRingAssignment(leftRingId: ringId),
           onRightChanged: (ringId) =>
@@ -193,6 +184,7 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
               '${controller.poseSetupInstruction} This time is not scored.',
           remainingSeconds: controller.remainingSeconds,
           totalSeconds: YogaSessionController.posePreparationDuration.inSeconds,
+          referencePose: controller.pose,
           onStop: () =>
               unawaited(controller.cancelActivePhase(wearablesProvider)),
         ),
@@ -202,23 +194,16 @@ class _YogaPostureTrackerPageState extends State<YogaPostureTrackerPage> {
           instruction: controller.pose.instruction,
           remainingSeconds: controller.remainingSeconds,
           totalSeconds: YogaSessionController.holdDuration.inSeconds,
-          pose: controller.showLiveFeedbackUi ? controller.pose : null,
-          liveMarkerFeedback: controller.showLiveFeedbackUi
-              ? controller.livePoseMarkerFeedback
-              : null,
-          liveFeedback:
-              controller.showLiveFeedbackUi ? controller.feedback : null,
+          liveFeedback: controller.feedback,
           signalQuality: controller.latestSignalQuality,
           onStop: () =>
               unawaited(controller.cancelActivePhase(wearablesProvider)),
         ),
       YogaSessionPhase.evaluating => const _EvaluatingScreen(),
       YogaSessionPhase.result => _ResultScreen(
-          pose: controller.pose,
           summary: controller.holdSummary,
           feedback: controller.feedback,
           signalQuality: controller.latestSignalQuality,
-          isControlledTrial: controller.isControlledTrial,
           trialRecords: controller.trialRecords,
           onRestart: () =>
               unawaited(controller.restartSession(wearablesProvider)),
@@ -320,10 +305,10 @@ class _StartScreen extends StatelessWidget {
   final RingAssignment assignment;
   final List<String> capabilityIssues;
   final bool isBusy;
-  final StudyTrialConfig? studyConfig;
-  final void Function(String? participantId, StudyCondition? condition)
-      onStudyConfigChanged;
-  final VoidCallback onPlayTestSound;
+  final bool isLlmCheckRunning;
+  final String? llmCheckMessage;
+  final bool? llmCheckSucceeded;
+  final VoidCallback onCheckLlm;
   final ValueChanged<String?> onLeftChanged;
   final ValueChanged<String?> onRightChanged;
   final VoidCallback onStart;
@@ -333,9 +318,10 @@ class _StartScreen extends StatelessWidget {
     required this.assignment,
     required this.capabilityIssues,
     required this.isBusy,
-    required this.studyConfig,
-    required this.onStudyConfigChanged,
-    required this.onPlayTestSound,
+    required this.isLlmCheckRunning,
+    required this.llmCheckMessage,
+    required this.llmCheckSucceeded,
+    required this.onCheckLlm,
     required this.onLeftChanged,
     required this.onRightChanged,
     required this.onStart,
@@ -384,25 +370,47 @@ class _StartScreen extends StatelessWidget {
           ),
         ],
         const SizedBox(height: SensorPageSpacing.sectionGap),
-        _StudyModeCard(
-          studyConfig: studyConfig,
-          onChanged: onStudyConfigChanged,
-        ),
-        const SizedBox(height: SensorPageSpacing.sectionGap),
         _InfoCard(
-          title: 'Audio check',
-          icon: Icons.volume_up_rounded,
+          title: 'LLM and audio check',
+          icon: Icons.record_voice_over_rounded,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Play a test tone before the trial to verify that audio reaches the intended output device.',
+                'Send a short request to the LLM and play its response through text-to-speech.',
               ),
+              if (llmCheckMessage != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      llmCheckSucceeded == true
+                          ? Icons.check_circle_rounded
+                          : Icons.error_outline_rounded,
+                      size: 18,
+                      color: llmCheckSucceeded == true
+                          ? const Color(0xFF2E7D32)
+                          : Theme.of(context).colorScheme.error,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(llmCheckMessage!)),
+                  ],
+                ),
+              ],
               const SizedBox(height: 8),
               OutlinedButton.icon(
-                onPressed: onPlayTestSound,
-                icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                label: const Text('Play test sound'),
+                onPressed: isLlmCheckRunning ? null : onCheckLlm,
+                icon: isLlmCheckRunning
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cloud_sync_rounded, size: 18),
+                label: Text(
+                  isLlmCheckRunning ? 'Checking...' : 'Check LLM connection',
+                ),
               ),
             ],
           ),
@@ -425,114 +433,6 @@ class _StartScreen extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _StudyModeCard extends StatefulWidget {
-  final StudyTrialConfig? studyConfig;
-  final void Function(String? participantId, StudyCondition? condition)
-      onChanged;
-
-  const _StudyModeCard({
-    required this.studyConfig,
-    required this.onChanged,
-  });
-
-  @override
-  State<_StudyModeCard> createState() => _StudyModeCardState();
-}
-
-class _StudyModeCardState extends State<_StudyModeCard> {
-  late final TextEditingController _participantIdController;
-  StudyCondition _condition = StudyCondition.noLiveCoaching;
-
-  bool get _enabled => widget.studyConfig != null;
-
-  @override
-  void initState() {
-    super.initState();
-    _participantIdController = TextEditingController(
-      text: widget.studyConfig?.participantId ?? '',
-    );
-    _condition = widget.studyConfig?.condition ?? _condition;
-  }
-
-  @override
-  void dispose() {
-    _participantIdController.dispose();
-    super.dispose();
-  }
-
-  void _notify({required bool enabled}) {
-    if (!enabled || _participantIdController.text.trim().isEmpty) {
-      widget.onChanged(null, null);
-      return;
-    }
-    widget.onChanged(_participantIdController.text.trim(), _condition);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return _ExpandableInfoCard(
-      title: 'Study mode (researcher)',
-      subtitle: _enabled
-          ? 'Controlled trial: ${widget.studyConfig!.participantId}, '
-              '${widget.studyConfig!.condition.label}'
-          : 'Off',
-      icon: Icons.science_rounded,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Controlled trial mode'),
-            value: _enabled,
-            onChanged: (value) => _notify(enabled: value),
-          ),
-          TextField(
-            controller: _participantIdController,
-            decoration: const InputDecoration(
-              labelText: 'Participant ID',
-              border: OutlineInputBorder(),
-            ),
-            onChanged: (_) {
-              if (_enabled) {
-                _notify(enabled: true);
-              }
-            },
-          ),
-          const SizedBox(height: 10),
-          DropdownButtonFormField<StudyCondition>(
-            initialValue: _condition,
-            decoration: const InputDecoration(
-              labelText: 'Condition',
-              border: OutlineInputBorder(),
-            ),
-            items: [
-              for (final condition in StudyCondition.values)
-                DropdownMenuItem(
-                  value: condition,
-                  child: Text(condition.label),
-                ),
-            ],
-            onChanged: (condition) {
-              if (condition == null) {
-                return;
-              }
-              setState(() => _condition = condition);
-              if (_enabled) {
-                _notify(enabled: true);
-              }
-            },
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'In controlled trials the participant sees no live corrections, markers, or scores. Results stay in the researcher view.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ],
-      ),
     );
   }
 }
@@ -1035,8 +935,7 @@ class _ProgressScreen extends StatelessWidget {
   final String instruction;
   final int remainingSeconds;
   final int totalSeconds;
-  final YogaPose? pose;
-  final ValueListenable<List<PoseMarkerFeedback>>? liveMarkerFeedback;
+  final YogaPose? referencePose;
   final YogaFeedback? liveFeedback;
   final SensorWindowQuality? signalQuality;
   final VoidCallback? onStop;
@@ -1047,8 +946,7 @@ class _ProgressScreen extends StatelessWidget {
     required this.instruction,
     required this.remainingSeconds,
     required this.totalSeconds,
-    this.pose,
-    this.liveMarkerFeedback,
+    this.referencePose,
     this.liveFeedback,
     this.signalQuality,
     this.onStop,
@@ -1098,23 +996,20 @@ class _ProgressScreen extends StatelessWidget {
                                 instruction,
                                 textAlign: TextAlign.center,
                               ),
-                              if (pose != null &&
-                                  liveMarkerFeedback != null &&
-                                  pose!.id == warriorTwoPose.id) ...[
+                              if (referencePose != null) ...[
                                 const SizedBox(height: 16),
                                 ConstrainedBox(
                                   constraints: const BoxConstraints(
                                     maxWidth: 360,
                                   ),
-                                  child: ValueListenableBuilder<
-                                      List<PoseMarkerFeedback>>(
-                                    valueListenable: liveMarkerFeedback!,
-                                    builder: (context, markers, _) {
-                                      return PoseSilhouetteFeedbackView(
-                                        pose: pose!,
-                                        markers: markers,
-                                      );
-                                    },
+                                  child: AspectRatio(
+                                    aspectRatio: 1.5,
+                                    child: Image.asset(
+                                      referencePose!.imageAsset,
+                                      fit: BoxFit.contain,
+                                      filterQuality: FilterQuality.high,
+                                      semanticLabel: referencePose!.name,
+                                    ),
                                   ),
                                 ),
                               ],
@@ -1347,21 +1242,17 @@ class _EvaluatingScreen extends StatelessWidget {
 }
 
 class _ResultScreen extends StatelessWidget {
-  final YogaPose pose;
   final YogaHoldSummary? summary;
   final YogaFeedback? feedback;
   final SensorWindowQuality? signalQuality;
-  final bool isControlledTrial;
   final List<TrialRecord> trialRecords;
   final VoidCallback onRestart;
   final VoidCallback onDone;
 
   const _ResultScreen({
-    required this.pose,
     required this.summary,
     required this.feedback,
     required this.signalQuality,
-    required this.isControlledTrial,
     required this.trialRecords,
     required this.onRestart,
     required this.onDone,
@@ -1369,49 +1260,24 @@ class _ResultScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Participants in controlled trials never see scores or issues; the
-    // details stay collapsed inside the researcher view.
     return ListView(
       padding: SensorPageSpacing.pagePaddingWithBottomInset(context),
       children: [
-        if (isControlledTrial) ...[
-          _HeroCard(
-            title: 'Trial complete',
-            subtitle: 'Thank you. Please continue with the study instructions.',
-            icon: Icons.check_circle_outline_rounded,
-          ),
-          const SizedBox(height: SensorPageSpacing.sectionGap),
-          _ExpandableInfoCard(
-            title: 'Researcher view',
-            subtitle: 'Score, issues, and export',
-            icon: Icons.science_rounded,
-            child: _ResultDetails(
-              pose: pose,
-              summary: summary,
-              feedback: feedback,
-              signalQuality: signalQuality,
-              trialRecords: trialRecords,
-            ),
-          ),
-        ] else ...[
-          _HeroCard(
-            title: switch (summary) {
-              null => 'Session complete',
-              final s when !s.isValid => 'Trial invalid',
-              final s => 'Score ${s.evaluation!.score}',
-            },
-            subtitle: feedback?.recommendation ?? 'No feedback generated.',
-            icon: Icons.insights_rounded,
-          ),
-          const SizedBox(height: SensorPageSpacing.sectionGap),
-          _ResultDetails(
-            pose: pose,
-            summary: summary,
-            feedback: feedback,
-            signalQuality: signalQuality,
-            trialRecords: trialRecords,
-          ),
-        ],
+        _HeroCard(
+          title: switch (summary) {
+            null => 'Session complete',
+            final s when !s.isValid => 'Trial invalid',
+            final s => 'Score ${s.evaluation!.score}',
+          },
+          subtitle: feedback?.recommendation ?? 'No feedback generated.',
+          icon: Icons.insights_rounded,
+        ),
+        const SizedBox(height: SensorPageSpacing.sectionGap),
+        _ResultDetails(
+          summary: summary,
+          signalQuality: signalQuality,
+          trialRecords: trialRecords,
+        ),
         const SizedBox(height: SensorPageSpacing.sectionGap),
         SafeArea(
           top: false,
@@ -1421,9 +1287,7 @@ class _ResultScreen extends StatelessWidget {
                 width: double.infinity,
                 child: PlatformElevatedButton(
                   onPressed: onRestart,
-                  child: PlatformText(
-                    isControlledTrial ? 'Next trial' : 'Restart session',
-                  ),
+                  child: PlatformText('Restart session'),
                 ),
               ),
               const SizedBox(height: 8),
@@ -1443,16 +1307,12 @@ class _ResultScreen extends StatelessWidget {
 }
 
 class _ResultDetails extends StatelessWidget {
-  final YogaPose pose;
   final YogaHoldSummary? summary;
-  final YogaFeedback? feedback;
   final SensorWindowQuality? signalQuality;
   final List<TrialRecord> trialRecords;
 
   const _ResultDetails({
-    required this.pose,
     required this.summary,
-    required this.feedback,
     required this.signalQuality,
     required this.trialRecords,
   });
@@ -1477,18 +1337,6 @@ class _ResultDetails extends StatelessWidget {
               summary.isValid
                   ? '${summary.validWindowCount} of ${summary.windowCount} scoring windows were valid. Final score: ${result!.score}.'
                   : 'Only ${summary.validWindowCount} of ${summary.windowCount} scoring windows were valid, so no score was computed. ${summary.invalidReason ?? ''}',
-            ),
-          ),
-          const SizedBox(height: SensorPageSpacing.sectionGap),
-        ],
-        if (pose.id == warriorTwoPose.id && result != null) ...[
-          _InfoCard(
-            title: 'Pose status',
-            icon: Icons.accessibility_new_rounded,
-            child: PoseSilhouetteFeedbackView(
-              pose: pose,
-              markers: result.markerFeedback,
-              showLegend: true,
             ),
           ),
           const SizedBox(height: SensorPageSpacing.sectionGap),
@@ -1558,7 +1406,7 @@ class _TrialExportCard extends StatelessWidget {
     await SharePlus.instance.share(
       ShareParams(
         files: [XFile(file.path)],
-        subject: 'Yoga Posture Tracker trial export',
+        subject: 'Yoga Posture Tracker session export',
       ),
     );
   }
@@ -1567,13 +1415,13 @@ class _TrialExportCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     return _InfoCard(
-      title: 'Trial export',
+      title: 'Session data export',
       icon: Icons.file_download_outlined,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${trialRecords.length} trial record(s) in this session.',
+            '${trialRecords.length} completed or cancelled hold(s) in this session.',
           ),
           const SizedBox(height: 8),
           Wrap(
